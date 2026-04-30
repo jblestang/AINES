@@ -288,7 +288,7 @@ impl Ppu {
             let fine_x = self.x as u16;
             for screen_x in 0..256u16 {
                 let total_x = screen_x + fine_x;
-                let coarse_x_inc = (total_x / 8) & 0x1F;
+                let coarse_x_inc = total_x / 8;
                 let base_coarse_x = self.v & 0x1F;
                 let final_coarse_x = (base_coarse_x + coarse_x_inc) % 32;
                 let final_nt = ((self.v >> 10) & 0x03) ^ ((base_coarse_x + coarse_x_inc) / 32) as u16;
