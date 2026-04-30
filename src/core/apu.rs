@@ -648,14 +648,35 @@ mod tests {
     }
 
     #[test]
-    fn test_frame_counter_4step() {
-        let mut apu = Apu::new();
-        apu.frame_counter_mode = 0;
+    fn test_pulse_timer_reload() {
+        let mut pulse = PulseChannel::new(false);
+        pulse.timer_reload = 100;
+        pulse.timer_value = 1;
         
-        // Step to 7457
-        for _ in 0..7457 { apu.step_frame_counter(); }
-        // Should have stepped envelopes
-        // (Hard to check without setting up an envelope, but we verified the cycle logic)
-        assert_eq!(apu.frame_counter_cycles, 7457);
+        pulse.step_timer(); // value becomes 0
+        pulse.step_timer(); // value reloads to 100
+        assert_eq!(pulse.timer_value, 100);
+    }
+
+    #[test]
+    fn test_pulse_duty_cycle() {
+        let mut pulse = PulseChannel::new(false);
+        pulse.enabled = true;
+        pulse.length_counter = 10;
+        pulse.timer_reload = 200; // >= PULSE_MIN_TIMER
+        pulse.envelope.constant_volume_flag = true;
+        pulse.envelope.volume_parameter = 15;
+        
+        pulse.duty = 0; // 12.5% duty: 0, 1, 0, 0, 0, 0, 0, 0
+        pulse.duty_pos = 0;
+        assert_eq!(pulse.output(), 0);
+        
+        // At pos 1, output should be 15
+        pulse.duty_pos = 1;
+        assert_eq!(pulse.output(), 15);
+        
+        // At pos 2, output should be 0
+        pulse.duty_pos = 2;
+        assert_eq!(pulse.output(), 0);
     }
 }

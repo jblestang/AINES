@@ -206,10 +206,8 @@ fn emulator_system(
     keyboard_input: Res<ButtonInput<KeyCode>>,
     _time: Res<Time>,
     mut audio: ResMut<AudioStream>,
+    mut sample_accumulator: Local<f32>,
 ) {
-    // Sampling rate tracking
-    static mut SAMPLE_ACCUMULATOR: f32 = 0.0;
-
     let Some(mut emu) = emulator else { return };
 
     if emu.running {
@@ -246,18 +244,13 @@ fn emulator_system(
                 for _ in 0..cycles {
                     bus.apu.step();
                     
-                    // SAFETY: SAMPLE_ACCUMULATOR is a static mut used for high-fidelity audio 
-                    // resample tracking. Access is safe here because this Bevy system is 
-                    // guaranteed to run on the main thread and not concurrently with itself.
-                    unsafe {
-                        SAMPLE_ACCUMULATOR += 1.0;
-                        if SAMPLE_ACCUMULATOR >= sample_step {
-                            let sample = bus.apu.output();
-                            for _ in 0..audio.channels {
-                                let _ = audio.producer.push(sample);
-                            }
-                            SAMPLE_ACCUMULATOR -= sample_step;
+                    *sample_accumulator += 1.0;
+                    if *sample_accumulator >= sample_step {
+                        let sample = bus.apu.output();
+                        for _ in 0..audio.channels {
+                            let _ = audio.producer.push(sample);
                         }
+                        *sample_accumulator -= sample_step;
                     }
 
                     for _ in 0..PPU_CPU_CYCLE_RATIO {

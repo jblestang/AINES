@@ -1033,4 +1033,89 @@ mod tests {
         cpu.step(&mut test_bus.bus);
         assert_eq!(cpu.x, 0);
     }
+
+    #[test]
+    fn test_adc_no_carry() {
+        let mut test_bus = TestBus::new();
+        let mut cpu = Cpu::new();
+        cpu.a = 0x10;
+        test_bus.bus.ram[0] = 0x69; // ADC Immediate
+        test_bus.bus.ram[1] = 0x10;
+        cpu.pc = 0;
+
+        cpu.step(&mut test_bus.bus);
+        assert_eq!(cpu.a, 0x20);
+        assert!(!cpu.status.contains(CpuFlags::CARRY));
+    }
+
+    #[test]
+    fn test_adc_with_carry() {
+        let mut test_bus = TestBus::new();
+        let mut cpu = Cpu::new();
+        cpu.a = 0xFF;
+        test_bus.bus.ram[0] = 0x69; 
+        test_bus.bus.ram[1] = 0x01;
+        cpu.pc = 0;
+
+        cpu.step(&mut test_bus.bus);
+        assert_eq!(cpu.a, 0x00);
+        assert!(cpu.status.contains(CpuFlags::CARRY));
+        assert!(cpu.status.contains(CpuFlags::ZERO));
+    }
+
+    #[test]
+    fn test_sbc_no_carry() {
+        let mut test_bus = TestBus::new();
+        let mut cpu = Cpu::new();
+        cpu.a = 0x10;
+        cpu.status.insert(CpuFlags::CARRY); // Carry = 1 means no borrow in SBC
+        test_bus.bus.ram[0] = 0xE9; // SBC Immediate
+        test_bus.bus.ram[1] = 0x05;
+        cpu.pc = 0;
+
+        cpu.step(&mut test_bus.bus);
+        assert_eq!(cpu.a, 0x0B);
+        assert!(cpu.status.contains(CpuFlags::CARRY));
+    }
+
+    #[test]
+    fn test_logical_and() {
+        let mut test_bus = TestBus::new();
+        let mut cpu = Cpu::new();
+        cpu.a = 0b1100_1100;
+        test_bus.bus.ram[0] = 0x29; // AND Immediate
+        test_bus.bus.ram[1] = 0b1010_1010;
+        cpu.pc = 0;
+
+        cpu.step(&mut test_bus.bus);
+        assert_eq!(cpu.a, 0b1000_1000);
+    }
+
+    #[test]
+    fn test_branch_taken() {
+        let mut test_bus = TestBus::new();
+        let mut cpu = Cpu::new();
+        cpu.status.insert(CpuFlags::ZERO);
+        test_bus.bus.ram[0] = 0xF0; // BEQ
+        test_bus.bus.ram[1] = 0x05; // Relative offset +5
+        cpu.pc = 0;
+
+        let cycles = cpu.step(&mut test_bus.bus);
+        assert_eq!(cpu.pc, 0x07); // 2 (fetch) + 5 (offset)
+        assert_eq!(cycles, 3); // 2 base + 1 branch taken
+    }
+
+    #[test]
+    fn test_branch_not_taken() {
+        let mut test_bus = TestBus::new();
+        let mut cpu = Cpu::new();
+        cpu.status.remove(CpuFlags::ZERO);
+        test_bus.bus.ram[0] = 0xF0; // BEQ
+        test_bus.bus.ram[1] = 0x05;
+        cpu.pc = 0;
+
+        let cycles = cpu.step(&mut test_bus.bus);
+        assert_eq!(cpu.pc, 0x02); // Just fetch BEQ + offset
+        assert_eq!(cycles, 2);
+    }
 }

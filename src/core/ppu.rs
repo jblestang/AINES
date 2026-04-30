@@ -609,6 +609,7 @@ impl Ppu {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::bus::PPU_REG_MIRROR_MASK;
 
     #[test]
     fn test_vram_mirroring_vertical() {
@@ -640,5 +641,33 @@ mod tests {
         assert_eq!(ppu.mirror_vram_addr(0x2800), 0x0400);
         // NT3 mirrors NT2
         assert_eq!(ppu.mirror_vram_addr(0x2C00), 0x0400);
+    }
+
+    #[test]
+    fn test_ppu_register_mirroring() {
+        // Register $2008 mirrors $2000
+        // But our Ppu::read/write takes 0..7 relative to $2000.
+        // The Bus handles the mirroring before calling Ppu.
+        // We test the Ppu's internal response to $2002 (Status)
+        let mut ppu = Ppu::new(vec![0; 0x2000]);
+        ppu.status = 0x80; // VBlank set
+        let status = ppu.read(PPU_REG_STATUS & PPU_REG_MIRROR_MASK);
+        assert_eq!(status, 0x80);
+        assert_eq!(ppu.status, 0x00); // VBlank should be cleared after read
+    }
+
+    #[test]
+    fn test_palette_mirroring() {
+        let mut ppu = Ppu::new(vec![0; 0x2000]);
+        // $3F10 is a mirror of $3F00
+        // We write 0x1A to $3F00
+        ppu.v = 0x3F00;
+        ppu.write(PPU_REG_DATA & PPU_REG_MIRROR_MASK, 0x1A);
+        assert_eq!(ppu.palette_table[0], 0x1A);
+        
+        // Read from $3F10
+        ppu.v = 0x3F10;
+        let val = ppu.read(PPU_REG_DATA & PPU_REG_MIRROR_MASK);
+        assert_eq!(val, 0x1A);
     }
 }
