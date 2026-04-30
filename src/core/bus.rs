@@ -117,7 +117,7 @@ impl Bus {
             }
             ADDR_OAM_DMA => {
                 let mut buffer = [0; OAM_DATA_SIZE];
-                let hi = (data as u16) << 8;
+                let hi = u16::from(data) << 8;
                 for i in 0..OAM_DATA_SIZE as u16 {
                     buffer[i as usize] = self.read(hi + i);
                 }

@@ -107,16 +107,14 @@ impl Envelope {
             self.start_flag = false;
             self.decay_count = 15;
             self.divider_count = self.volume_parameter;
+        } else if self.divider_count > 0 {
+            self.divider_count -= 1;
         } else {
-            if self.divider_count > 0 {
-                self.divider_count -= 1;
-            } else {
-                self.divider_count = self.volume_parameter;
-                if self.decay_count > 0 {
-                    self.decay_count -= 1;
-                } else if self.loop_flag {
-                    self.decay_count = 15;
-                }
+            self.divider_count = self.volume_parameter;
+            if self.decay_count > 0 {
+                self.decay_count -= 1;
+            } else if self.loop_flag {
+                self.decay_count = 15;
             }
         }
     }
@@ -274,7 +272,7 @@ impl NoiseChannel {
     /// Steps the 15-bit Linear Feedback Shift Register (LFSR).
     /// 
     /// # Algorithm
-    /// 1. Bit 0 is XORed with Bit 1 (mode 0) or Bit 6 (mode 1).
+    /// 1. Bit 0 is `XORed` with Bit 1 (mode 0) or Bit 6 (mode 1).
     /// 2. The shift register is shifted right by 1 bit.
     /// 3. The XOR result is placed in the feedback bit (Bit 14).
     /// 
@@ -403,10 +401,10 @@ impl Apu {
                 self.pulse1.sweep.reload = true;
             }
             REG_P1_LO => {
-                self.pulse1.timer_reload = (self.pulse1.timer_reload & 0x0700) | (data as u16);
+                self.pulse1.timer_reload = (self.pulse1.timer_reload & 0x0700) | u16::from(data);
             }
             REG_P1_HI => {
-                self.pulse1.timer_reload = (self.pulse1.timer_reload & 0x00FF) | ((data as u16 & 0x07) << 8);
+                self.pulse1.timer_reload = (self.pulse1.timer_reload & 0x00FF) | ((u16::from(data) & 0x07) << 8);
                 self.pulse1.length_counter = self.get_length_counter(data >> 3);
                 self.pulse1.duty_pos = 0;
                 self.pulse1.envelope.start_flag = true;
@@ -427,10 +425,10 @@ impl Apu {
                 self.pulse2.sweep.reload = true;
             }
             REG_P2_LO => {
-                self.pulse2.timer_reload = (self.pulse2.timer_reload & 0x0700) | (data as u16);
+                self.pulse2.timer_reload = (self.pulse2.timer_reload & 0x0700) | u16::from(data);
             }
             REG_P2_HI => {
-                self.pulse2.timer_reload = (self.pulse2.timer_reload & 0x00FF) | ((data as u16 & 0x07) << 8);
+                self.pulse2.timer_reload = (self.pulse2.timer_reload & 0x00FF) | ((u16::from(data) & 0x07) << 8);
                 self.pulse2.length_counter = self.get_length_counter(data >> 3);
                 self.pulse2.duty_pos = 0;
                 self.pulse2.envelope.start_flag = true;
@@ -442,10 +440,10 @@ impl Apu {
                 self.triangle.linear_counter_reload = data & 0x7F;
             }
             REG_TRI_LO => {
-                self.triangle.timer_reload = (self.triangle.timer_reload & 0x0700) | (data as u16);
+                self.triangle.timer_reload = (self.triangle.timer_reload & 0x0700) | u16::from(data);
             }
             REG_TRI_HI => {
-                self.triangle.timer_reload = (self.triangle.timer_reload & 0x00FF) | ((data as u16 & 0x07) << 8);
+                self.triangle.timer_reload = (self.triangle.timer_reload & 0x00FF) | ((u16::from(data) & 0x07) << 8);
                 self.triangle.length_counter = self.get_length_counter(data >> 3);
                 self.triangle.reload_flag = true;
             }
@@ -609,14 +607,14 @@ impl Apu {
         let pulse_out = if p1 == 0 && p2 == 0 {
             0.0
         } else {
-            (95.88 / (8128.0 / (p1 as f32 + p2 as f32) + 100.0)) * AUDIO_GAIN
+            (95.88 / (8128.0 / (f32::from(p1) + f32::from(p2)) + 100.0)) * AUDIO_GAIN
         };
         
         // --- TND MIXER (Triangle, Noise, DMC) ---
         let tnd_out = if tri == 0 && n == 0 {
             0.0
         } else {
-            (159.79 / (1.0 / (tri as f32 / 8227.0 + n as f32 / 12241.0) + 100.0)) * AUDIO_GAIN
+            (159.79 / (1.0 / (f32::from(tri) / 8227.0 + f32::from(n) / 12241.0) + 100.0)) * AUDIO_GAIN
         };
 
         let raw = pulse_out + tnd_out;

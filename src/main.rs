@@ -134,7 +134,7 @@ fn setup(
                 *sample = consumer.pop().unwrap_or(0.0);
             }
         },
-        |err| eprintln!("audio stream error: {}", err),
+        |err| eprintln!("audio stream error: {err}"),
         None
     ).unwrap();
     _stream.play().unwrap();
@@ -156,10 +156,10 @@ fn setup(
                     emulator.running = true;
                     commands.insert_resource(emulator);
                 }
-                Err(e) => eprintln!("Failed to parse default ROM: {}", e),
+                Err(e) => eprintln!("Failed to parse default ROM: {e}"),
             }
         }
-        Err(e) => eprintln!("Failed to read default ROM at {}: {}", default_rom_path, e),
+        Err(e) => eprintln!("Failed to read default ROM at {default_rom_path}: {e}"),
     }
 }
 
@@ -168,7 +168,7 @@ fn ui_system(
     mut ui_state: ResMut<UiState>,
     mut commands: Commands,
 ) {
-    for mut egui_context in q_egui.iter_mut() {
+    for mut egui_context in &mut q_egui {
         let ctx = egui_context.get_mut();
         // egui menu removed for now
         
@@ -176,7 +176,7 @@ fn ui_system(
         ui_state.file_dialog.update(ctx);
 
         if let Some(path) = ui_state.file_dialog.take_picked() {
-            println!("Selected file: {:?}", path);
+            println!("Selected file: {path:?}");
             match fs::read(path) {
                 Ok(data) => {
                     match Cartridge::load_rom(&data) {
@@ -188,12 +188,12 @@ fn ui_system(
                             commands.insert_resource(emulator);
                         }
                         Err(e) => {
-                            eprintln!("Failed to parse ROM: {}", e);
+                            eprintln!("Failed to parse ROM: {e}");
                         }
                     }
                 }
                 Err(e) => {
-                    eprintln!("Failed to read file: {}", e);
+                    eprintln!("Failed to read file: {e}");
                 }
             }
         }
@@ -207,10 +207,10 @@ fn emulator_system(
     _time: Res<Time>,
     mut audio: ResMut<AudioStream>,
 ) {
-    let mut emu = match emulator {
-        Some(e) => e,
-        None => return, // Emulator hasn't been loaded yet
-    };
+    // Sampling rate tracking
+    static mut SAMPLE_ACCUMULATOR: f32 = 0.0;
+
+    let Some(mut emu) = emulator else { return };
 
     if emu.running {
         // Handle Input
@@ -233,17 +233,15 @@ fn emulator_system(
 
         let mut updated = false;
 
-        // Sampling rate tracking
-        static mut SAMPLE_ACCUMULATOR: f32 = 0.0;
         let sample_step = NTSC_CPU_CLOCK / audio.sample_rate; // Hardware-accurate ratio
 
         // Audio-driven sync: Run emulator until audio buffer is sufficiently full
         // We want to keep about 2048-3072 samples in the 4096 buffer
         while audio.producer.free_len() > AUDIO_BUFFER_HEADROOM {
-            let mut _frame_complete = false;
+            let mut frame_complete = false;
             let NesEmulator { cpu, bus, .. } = &mut *emu;
 
-            while !_frame_complete {
+            while !frame_complete {
                 let cycles = cpu.step(bus);
                 for _ in 0..cycles {
                     bus.apu.step();
@@ -263,10 +261,10 @@ fn emulator_system(
                     }
 
                     for _ in 0..PPU_CPU_CYCLE_RATIO {
-                        _frame_complete = bus.ppu.step();
-                        if _frame_complete { break; }
+                        frame_complete = bus.ppu.step();
+                        if frame_complete { break; }
                     }
-                    if _frame_complete { break; }
+                    if frame_complete { break; }
                 }
             }
             updated = true;
@@ -275,11 +273,10 @@ fn emulator_system(
         if updated {
             // Update the Bevy texture with the PPU's framebuffer
             for sprite in query.iter() {
-                if let Some(image) = images.get_mut(&sprite.image) {
-                    if let Some(data) = &mut image.data {
+                if let Some(image) = images.get_mut(&sprite.image)
+                    && let Some(data) = &mut image.data {
                         data.copy_from_slice(&emu.bus.ppu.frame_buffer);
                     }
-                }
             }
         }
     }

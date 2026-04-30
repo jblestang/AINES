@@ -22,7 +22,6 @@ pub enum AddressingMode {
     AbsoluteY,
     IndirectX,
     IndirectY,
-    NoneAddressing,
 }
 
 bitflags::bitflags! {
@@ -40,7 +39,7 @@ bitflags::bitflags! {
 }
 
 /// Initial status flags: Interrupt Disable set, and the "Always 1" Bit 5 set.
-/// https://www.nesdev.org/wiki/CPU_status_flags
+/// <https://www.nesdev.org/wiki/CPU_status_flags>
 pub const INITIAL_STATUS: u8 = CpuFlags::INTERRUPT_DISABLE.bits() | CpuFlags::BREAK2.bits();
 
 /// Start of the CPU stack in memory
@@ -50,12 +49,10 @@ pub const STACK_INITIAL_VALUE: u8 = 0xFD;
 
 /// Number of CPU cycles consumed by an NMI
 pub const NMI_CYCLES: u32 = 7;
-/// Vector address for the Non-Maskable Interrupt (NMI)
+/// Vector for the non-maskable interrupt (NMI)
 pub const NMI_VECTOR: u16 = 0xFFFA;
-/// Vector address for the CPU Reset
+/// Vector for the initial program counter on reset
 pub const RESET_VECTOR: u16 = 0xFFFC;
-/// Vector address for the Maskable Interrupt (IRQ) and BRK instruction
-pub const IRQ_VECTOR: u16 = 0xFFFE;
 
 pub struct Cpu {
     pub a: u8,
@@ -87,50 +84,44 @@ impl Cpu {
         self.sp = STACK_INITIAL_VALUE;
         self.status = CpuFlags::from_bits_truncate(INITIAL_STATUS);
 
-        self.pc = self.mem_read_u16(bus, RESET_VECTOR);
+        self.pc = Self::mem_read_u16(bus, RESET_VECTOR);
     }
 
     /// Triggers a Non-Maskable Interrupt
     pub fn nmi(&mut self, bus: &mut Bus) {
         self.stack_push_u16(bus, self.pc);
-        let mut flags = self.status.clone();
+        let mut flags = self.status;
         flags.remove(CpuFlags::BREAK);
         flags.insert(CpuFlags::BREAK2);
         self.stack_push(bus, flags.bits());
         self.status.insert(CpuFlags::INTERRUPT_DISABLE);
 
-        self.pc = self.mem_read_u16(bus, NMI_VECTOR);
+        self.pc = Self::mem_read_u16(bus, NMI_VECTOR);
     }
 
-    fn mem_read(&self, bus: &mut Bus, addr: u16) -> u8 {
+    fn mem_read(bus: &mut Bus, addr: u16) -> u8 {
         bus.read(addr)
     }
 
-    fn mem_write(&self, bus: &mut Bus, addr: u16, data: u8) {
+    fn mem_write(bus: &mut Bus, addr: u16, data: u8) {
         bus.write(addr, data);
     }
 
-    fn mem_read_u16(&self, bus: &mut Bus, pos: u16) -> u16 {
-        let lo = self.mem_read(bus, pos) as u16;
-        let hi = self.mem_read(bus, pos + 1) as u16;
-        (hi << 8) | (lo as u16)
+    fn mem_read_u16(bus: &mut Bus, pos: u16) -> u16 {
+        let lo = u16::from(Self::mem_read(bus, pos));
+        let hi = u16::from(Self::mem_read(bus, pos + 1));
+        (hi << 8) | lo
     }
 
-    fn mem_write_u16(&mut self, bus: &mut Bus, pos: u16, data: u16) {
-        let hi = (data >> 8) as u8;
-        let lo = (data & 0xff) as u8;
-        self.mem_write(bus, pos, lo);
-        self.mem_write(bus, pos + 1, hi);
-    }
 
     fn stack_push(&mut self, bus: &mut Bus, data: u8) {
-        self.mem_write(bus, STACK_START + self.sp as u16, data);
+        Self::mem_write(bus, STACK_START + u16::from(self.sp), data);
         self.sp = self.sp.wrapping_sub(1);
     }
 
     fn stack_pop(&mut self, bus: &mut Bus) -> u8 {
         self.sp = self.sp.wrapping_add(1);
-        self.mem_read(bus, STACK_START + self.sp as u16)
+        Self::mem_read(bus, STACK_START + u16::from(self.sp))
     }
 
     fn stack_push_u16(&mut self, bus: &mut Bus, data: u16) {
@@ -141,8 +132,8 @@ impl Cpu {
     }
 
     fn stack_pop_u16(&mut self, bus: &mut Bus) -> u16 {
-        let lo = self.stack_pop(bus) as u16;
-        let hi = self.stack_pop(bus) as u16;
+        let lo = u16::from(self.stack_pop(bus));
+        let hi = u16::from(self.stack_pop(bus));
         hi << 8 | lo
     }
 
@@ -180,42 +171,41 @@ impl Cpu {
     fn get_operand_address(&self, bus: &mut Bus, mode: &AddressingMode) -> (u16, bool) {
         match mode {
             AddressingMode::Immediate => (self.pc, false),
-            AddressingMode::ZeroPage => (self.mem_read(bus, self.pc) as u16, false),
-            AddressingMode::Absolute => (self.mem_read_u16(bus, self.pc), false),
+            AddressingMode::ZeroPage => (u16::from(Self::mem_read(bus, self.pc)), false),
+            AddressingMode::Absolute => (Self::mem_read_u16(bus, self.pc), false),
             AddressingMode::ZeroPageX => {
-                let pos = self.mem_read(bus, self.pc);
-                (pos.wrapping_add(self.x) as u16, false)
+                let pos = Self::mem_read(bus, self.pc);
+                (u16::from(pos.wrapping_add(self.x)), false)
             }
             AddressingMode::ZeroPageY => {
-                let pos = self.mem_read(bus, self.pc);
-                (pos.wrapping_add(self.y) as u16, false)
+                let pos = Self::mem_read(bus, self.pc);
+                (u16::from(pos.wrapping_add(self.y)), false)
             }
             AddressingMode::AbsoluteX => {
-                let base = self.mem_read_u16(bus, self.pc);
-                let addr = base.wrapping_add(self.x as u16);
+                let base = Self::mem_read_u16(bus, self.pc);
+                let addr = base.wrapping_add(u16::from(self.x));
                 (addr, self.page_crossed(base, addr))
             }
             AddressingMode::AbsoluteY => {
-                let base = self.mem_read_u16(bus, self.pc);
-                let addr = base.wrapping_add(self.y as u16);
+                let base = Self::mem_read_u16(bus, self.pc);
+                let addr = base.wrapping_add(u16::from(self.y));
                 (addr, self.page_crossed(base, addr))
             }
             AddressingMode::IndirectX => {
-                let base = self.mem_read(bus, self.pc);
+                let base = Self::mem_read(bus, self.pc);
                 let ptr = base.wrapping_add(self.x);
-                let lo = self.mem_read(bus, ptr as u16);
-                let hi = self.mem_read(bus, ptr.wrapping_add(1) as u16);
-                (((hi as u16) << 8) | (lo as u16), false)
+                let lo = Self::mem_read(bus, u16::from(ptr));
+                let hi = Self::mem_read(bus, u16::from(ptr.wrapping_add(1)));
+                ((u16::from(hi) << 8) | u16::from(lo), false)
             }
             AddressingMode::IndirectY => {
-                let base = self.mem_read(bus, self.pc);
-                let lo = self.mem_read(bus, base as u16);
-                let hi = self.mem_read(bus, base.wrapping_add(1) as u16);
-                let deref_base = ((hi as u16) << 8) | (lo as u16);
-                let addr = deref_base.wrapping_add(self.y as u16);
+                let base = Self::mem_read(bus, self.pc);
+                let lo = Self::mem_read(bus, u16::from(base));
+                let hi = Self::mem_read(bus, u16::from(base.wrapping_add(1)));
+                let deref_base = (u16::from(hi) << 8) | u16::from(lo);
+                let addr = deref_base.wrapping_add(u16::from(self.y));
                 (addr, self.page_crossed(deref_base, addr))
             }
-            AddressingMode::NoneAddressing => panic!("mode {:?} is not supported", mode),
         }
     }
 
@@ -224,17 +214,17 @@ impl Cpu {
     }
 
     fn get_operand_address_for_jmp_indirect(&self, bus: &mut Bus) -> u16 {
-        let addr = self.mem_read_u16(bus, self.pc);
+        let addr = Self::mem_read_u16(bus, self.pc);
         
-        let indirect_ref = if addr & 0x00FF == 0x00FF {
-            let lo = self.mem_read(bus, addr);
-            let hi = self.mem_read(bus, addr & 0xFF00);
-            ((hi as u16) << 8) | (lo as u16)
-        } else {
-            self.mem_read_u16(bus, addr)
-        };
+        
 
-        indirect_ref
+        if addr & 0x00FF == 0x00FF {
+            let lo = Self::mem_read(bus, addr);
+            let hi = Self::mem_read(bus, addr & 0xFF00);
+            (u16::from(hi) << 8) | u16::from(lo)
+        } else {
+            Self::mem_read_u16(bus, addr)
+        }
     }
 
     /// Branch instruction helper.
@@ -248,7 +238,7 @@ impl Cpu {
     /// 
     /// See: [Branch Instructions](https://www.nesdev.org/wiki/CPU_instructions#Branch_instructions)
     fn branch(&mut self, bus: &mut Bus, condition: bool) -> u32 {
-        let jump: i8 = self.mem_read(bus, self.pc) as i8;
+        let jump: i8 = Self::mem_read(bus, self.pc) as i8;
         self.pc = self.pc.wrapping_add(1);
         if condition {
             let old_pc = self.pc;
@@ -262,54 +252,54 @@ impl Cpu {
     }
 
     /// Load Accumulator (LDA)
-    /// https://www.nesdev.org/wiki/CPU_instructions#LDA
+    /// <https://www.nesdev.org/wiki/CPU_instructions#LDA>
     fn lda(&mut self, bus: &mut Bus, mode: &AddressingMode) -> bool {
         let (addr, page_crossed) = self.get_operand_address(bus, mode);
-        let value = self.mem_read(bus, addr);
+        let value = Self::mem_read(bus, addr);
         self.a = value;
         self.update_zero_and_negative_flags(self.a);
         page_crossed
     }
 
     /// Load X Register (LDX)
-    /// https://www.nesdev.org/wiki/CPU_instructions#LDX
+    /// <https://www.nesdev.org/wiki/CPU_instructions#LDX>
     fn ldx(&mut self, bus: &mut Bus, mode: &AddressingMode) -> bool {
         let (addr, page_crossed) = self.get_operand_address(bus, mode);
-        let value = self.mem_read(bus, addr);
+        let value = Self::mem_read(bus, addr);
         self.x = value;
         self.update_zero_and_negative_flags(self.x);
         page_crossed
     }
 
     /// Load Y Register (LDY)
-    /// https://www.nesdev.org/wiki/CPU_instructions#LDY
+    /// <https://www.nesdev.org/wiki/CPU_instructions#LDY>
     fn ldy(&mut self, bus: &mut Bus, mode: &AddressingMode) -> bool {
         let (addr, page_crossed) = self.get_operand_address(bus, mode);
-        let value = self.mem_read(bus, addr);
+        let value = Self::mem_read(bus, addr);
         self.y = value;
         self.update_zero_and_negative_flags(self.y);
         page_crossed
     }
 
     /// Store Accumulator (STA)
-    /// https://www.nesdev.org/wiki/CPU_instructions#STA
+    /// <https://www.nesdev.org/wiki/CPU_instructions#STA>
     fn sta(&self, bus: &mut Bus, mode: &AddressingMode) {
         let (addr, _) = self.get_operand_address(bus, mode);
-        self.mem_write(bus, addr, self.a);
+        Self::mem_write(bus, addr, self.a);
     }
 
     /// Store X Register (STX)
-    /// https://www.nesdev.org/wiki/CPU_instructions#STX
+    /// <https://www.nesdev.org/wiki/CPU_instructions#STX>
     fn stx(&self, bus: &mut Bus, mode: &AddressingMode) {
         let (addr, _) = self.get_operand_address(bus, mode);
-        self.mem_write(bus, addr, self.x);
+        Self::mem_write(bus, addr, self.x);
     }
 
     /// Store Y Register (STY)
-    /// https://www.nesdev.org/wiki/CPU_instructions#STY
+    /// <https://www.nesdev.org/wiki/CPU_instructions#STY>
     fn sty(&self, bus: &mut Bus, mode: &AddressingMode) {
         let (addr, _) = self.get_operand_address(bus, mode);
-        self.mem_write(bus, addr, self.y);
+        Self::mem_write(bus, addr, self.y);
     }
 
     /// Implementation of the Addition algorithm (ADC).
@@ -325,9 +315,9 @@ impl Cpu {
     /// 
     /// See: [ADC Instruction](https://www.nesdev.org/wiki/Status_flags#Carry)
     fn add_to_register_a(&mut self, data: u8) {
-        let sum = self.a as u16 
-            + data as u16 
-            + (if self.status.contains(CpuFlags::CARRY) { 1 } else { 0 }) as u16;
+        let sum = u16::from(self.a) 
+            + u16::from(data) 
+            + i32::from(self.status.contains(CpuFlags::CARRY)) as u16;
 
         let carry = sum > 0xFF;
 
@@ -352,10 +342,10 @@ impl Cpu {
     }
 
     /// Add with Carry (ADC) instruction.
-    /// https://www.nesdev.org/wiki/CPU_instructions#ADC
+    /// <https://www.nesdev.org/wiki/CPU_instructions#ADC>
     fn adc(&mut self, bus: &mut Bus, mode: &AddressingMode) -> bool {
         let (addr, page_crossed) = self.get_operand_address(bus, mode);
-        let value = self.mem_read(bus, addr);
+        let value = Self::mem_read(bus, addr);
         self.add_to_register_a(value);
         page_crossed
     }
@@ -369,44 +359,44 @@ impl Cpu {
     /// See: [SBC Instruction](https://www.nesdev.org/wiki/CPU_instructions#SBC)
     fn sbc(&mut self, bus: &mut Bus, mode: &AddressingMode) -> bool {
         let (addr, page_crossed) = self.get_operand_address(bus, mode);
-        let value = self.mem_read(bus, addr);
+        let value = Self::mem_read(bus, addr);
         // SBC A, M => ADC A, ~M
         self.add_to_register_a(((value as i8).wrapping_neg().wrapping_sub(1)) as u8);
         page_crossed
     }
 
     /// Logical AND (AND)
-    /// https://www.nesdev.org/wiki/CPU_instructions#AND
+    /// <https://www.nesdev.org/wiki/CPU_instructions#AND>
     fn and(&mut self, bus: &mut Bus, mode: &AddressingMode) -> bool {
         let (addr, page_crossed) = self.get_operand_address(bus, mode);
-        let value = self.mem_read(bus, addr);
+        let value = Self::mem_read(bus, addr);
         self.a &= value;
         self.update_zero_and_negative_flags(self.a);
         page_crossed
     }
 
     /// Exclusive OR (EOR)
-    /// https://www.nesdev.org/wiki/CPU_instructions#EOR
+    /// <https://www.nesdev.org/wiki/CPU_instructions#EOR>
     fn eor(&mut self, bus: &mut Bus, mode: &AddressingMode) -> bool {
         let (addr, page_crossed) = self.get_operand_address(bus, mode);
-        let value = self.mem_read(bus, addr);
+        let value = Self::mem_read(bus, addr);
         self.a ^= value;
         self.update_zero_and_negative_flags(self.a);
         page_crossed
     }
 
     /// Logical Inclusive OR (ORA)
-    /// https://www.nesdev.org/wiki/CPU_instructions#ORA
+    /// <https://www.nesdev.org/wiki/CPU_instructions#ORA>
     fn ora(&mut self, bus: &mut Bus, mode: &AddressingMode) -> bool {
         let (addr, page_crossed) = self.get_operand_address(bus, mode);
-        let value = self.mem_read(bus, addr);
+        let value = Self::mem_read(bus, addr);
         self.a |= value;
         self.update_zero_and_negative_flags(self.a);
         page_crossed
     }
 
     /// Arithmetic Shift Left (ASL) - Accumulator
-    /// https://www.nesdev.org/wiki/CPU_instructions#ASL
+    /// <https://www.nesdev.org/wiki/CPU_instructions#ASL>
     fn asl_a(&mut self) {
         let mut data = self.a;
         if data >> 7 == 1 {
@@ -414,7 +404,7 @@ impl Cpu {
         } else {
             self.status.remove(CpuFlags::CARRY);
         }
-        data = data << 1;
+        data <<= 1;
         self.a = data;
         self.update_zero_and_negative_flags(self.a);
     }
@@ -422,19 +412,19 @@ impl Cpu {
     /// Arithmetic Shift Left (ASL) - Memory
     fn asl(&mut self, bus: &mut Bus, mode: &AddressingMode) {
         let (addr, _) = self.get_operand_address(bus, mode);
-        let mut data = self.mem_read(bus, addr);
+        let mut data = Self::mem_read(bus, addr);
         if data >> 7 == 1 {
             self.status.insert(CpuFlags::CARRY);
         } else {
             self.status.remove(CpuFlags::CARRY);
         }
-        data = data << 1;
-        self.mem_write(bus, addr, data);
+        data <<= 1;
+        Self::mem_write(bus, addr, data);
         self.update_zero_and_negative_flags(data);
     }
 
     /// Logical Shift Right (LSR) - Accumulator
-    /// https://www.nesdev.org/wiki/CPU_instructions#LSR
+    /// <https://www.nesdev.org/wiki/CPU_instructions#LSR>
     fn lsr_a(&mut self) {
         let mut data = self.a;
         if data & 1 == 1 {
@@ -442,7 +432,7 @@ impl Cpu {
         } else {
             self.status.remove(CpuFlags::CARRY);
         }
-        data = data >> 1;
+        data >>= 1;
         self.a = data;
         self.update_zero_and_negative_flags(self.a);
     }
@@ -450,19 +440,19 @@ impl Cpu {
     /// Logical Shift Right (LSR) - Memory
     fn lsr(&mut self, bus: &mut Bus, mode: &AddressingMode) {
         let (addr, _) = self.get_operand_address(bus, mode);
-        let mut data = self.mem_read(bus, addr);
+        let mut data = Self::mem_read(bus, addr);
         if data & 1 == 1 {
             self.status.insert(CpuFlags::CARRY);
         } else {
             self.status.remove(CpuFlags::CARRY);
         }
-        data = data >> 1;
-        self.mem_write(bus, addr, data);
+        data >>= 1;
+        Self::mem_write(bus, addr, data);
         self.update_zero_and_negative_flags(data);
     }
 
     /// Rotate Left (ROL) - Accumulator
-    /// https://www.nesdev.org/wiki/CPU_instructions#ROL
+    /// <https://www.nesdev.org/wiki/CPU_instructions#ROL>
     fn rol_a(&mut self) {
         let mut data = self.a;
         let old_carry = self.status.contains(CpuFlags::CARRY);
@@ -472,9 +462,9 @@ impl Cpu {
         } else {
             self.status.remove(CpuFlags::CARRY);
         }
-        data = data << 1;
+        data <<= 1;
         if old_carry {
-            data = data | 1;
+            data |= 1;
         }
         self.a = data;
         self.update_zero_and_negative_flags(self.a);
@@ -483,7 +473,7 @@ impl Cpu {
     /// Rotate Left (ROL) - Memory
     fn rol(&mut self, bus: &mut Bus, mode: &AddressingMode) {
         let (addr, _) = self.get_operand_address(bus, mode);
-        let mut data = self.mem_read(bus, addr);
+        let mut data = Self::mem_read(bus, addr);
         let old_carry = self.status.contains(CpuFlags::CARRY);
 
         if data >> 7 == 1 {
@@ -491,16 +481,16 @@ impl Cpu {
         } else {
             self.status.remove(CpuFlags::CARRY);
         }
-        data = data << 1;
+        data <<= 1;
         if old_carry {
-            data = data | 1;
+            data |= 1;
         }
-        self.mem_write(bus, addr, data);
+        Self::mem_write(bus, addr, data);
         self.update_zero_and_negative_flags(data);
     }
 
     /// Rotate Right (ROR) - Accumulator
-    /// https://www.nesdev.org/wiki/CPU_instructions#ROR
+    /// <https://www.nesdev.org/wiki/CPU_instructions#ROR>
     fn ror_a(&mut self) {
         let mut data = self.a;
         let old_carry = self.status.contains(CpuFlags::CARRY);
@@ -510,9 +500,9 @@ impl Cpu {
         } else {
             self.status.remove(CpuFlags::CARRY);
         }
-        data = data >> 1;
+        data >>= 1;
         if old_carry {
-            data = data | 0b1000_0000;
+            data |= 0b1000_0000;
         }
         self.a = data;
         self.update_zero_and_negative_flags(self.a);
@@ -521,7 +511,7 @@ impl Cpu {
     /// Rotate Right (ROR) - Memory
     fn ror(&mut self, bus: &mut Bus, mode: &AddressingMode) {
         let (addr, _) = self.get_operand_address(bus, mode);
-        let mut data = self.mem_read(bus, addr);
+        let mut data = Self::mem_read(bus, addr);
         let old_carry = self.status.contains(CpuFlags::CARRY);
 
         if data & 1 == 1 {
@@ -529,55 +519,55 @@ impl Cpu {
         } else {
             self.status.remove(CpuFlags::CARRY);
         }
-        data = data >> 1;
+        data >>= 1;
         if old_carry {
-            data = data | 0b1000_0000;
+            data |= 0b1000_0000;
         }
-        self.mem_write(bus, addr, data);
+        Self::mem_write(bus, addr, data);
         self.update_zero_and_negative_flags(data);
     }
 
     /// Increment Memory (INC)
-    /// https://www.nesdev.org/wiki/CPU_instructions#INC
+    /// <https://www.nesdev.org/wiki/CPU_instructions#INC>
     fn inc(&mut self, bus: &mut Bus, mode: &AddressingMode) {
         let (addr, _) = self.get_operand_address(bus, mode);
-        let data = self.mem_read(bus, addr).wrapping_add(1);
-        self.mem_write(bus, addr, data);
+        let data = Self::mem_read(bus, addr).wrapping_add(1);
+        Self::mem_write(bus, addr, data);
         self.update_zero_and_negative_flags(data);
     }
 
     /// Increment X Register (INX)
-    /// https://www.nesdev.org/wiki/CPU_instructions#INX
+    /// <https://www.nesdev.org/wiki/CPU_instructions#INX>
     fn inx(&mut self) {
         self.x = self.x.wrapping_add(1);
         self.update_zero_and_negative_flags(self.x);
     }
 
     /// Increment Y Register (INY)
-    /// https://www.nesdev.org/wiki/CPU_instructions#INY
+    /// <https://www.nesdev.org/wiki/CPU_instructions#INY>
     fn iny(&mut self) {
         self.y = self.y.wrapping_add(1);
         self.update_zero_and_negative_flags(self.y);
     }
 
     /// Decrement Memory (DEC)
-    /// https://www.nesdev.org/wiki/CPU_instructions#DEC
+    /// <https://www.nesdev.org/wiki/CPU_instructions#DEC>
     fn dec(&mut self, bus: &mut Bus, mode: &AddressingMode) {
         let (addr, _) = self.get_operand_address(bus, mode);
-        let data = self.mem_read(bus, addr).wrapping_sub(1);
-        self.mem_write(bus, addr, data);
+        let data = Self::mem_read(bus, addr).wrapping_sub(1);
+        Self::mem_write(bus, addr, data);
         self.update_zero_and_negative_flags(data);
     }
 
     /// Decrement X Register (DEX)
-    /// https://www.nesdev.org/wiki/CPU_instructions#DEX
+    /// <https://www.nesdev.org/wiki/CPU_instructions#DEX>
     fn dex(&mut self) {
         self.x = self.x.wrapping_sub(1);
         self.update_zero_and_negative_flags(self.x);
     }
 
     /// Decrement Y Register (DEY)
-    /// https://www.nesdev.org/wiki/CPU_instructions#DEY
+    /// <https://www.nesdev.org/wiki/CPU_instructions#DEY>
     fn dey(&mut self) {
         self.y = self.y.wrapping_sub(1);
         self.update_zero_and_negative_flags(self.y);
@@ -591,7 +581,7 @@ impl Cpu {
     /// 3. Update Zero and Negative flags based on the result.
     fn cmp_base(&mut self, mode: &AddressingMode, compare_with: u8, bus: &mut Bus) -> bool {
         let (addr, page_crossed) = self.get_operand_address(bus, mode);
-        let data = self.mem_read(bus, addr);
+        let data = Self::mem_read(bus, addr);
         if data <= compare_with {
             self.status.insert(CpuFlags::CARRY);
         } else {
@@ -603,19 +593,19 @@ impl Cpu {
     }
 
     /// Compare Accumulator (CMP)
-    /// https://www.nesdev.org/wiki/CPU_instructions#CMP
+    /// <https://www.nesdev.org/wiki/CPU_instructions#CMP>
     fn cmp(&mut self, bus: &mut Bus, mode: &AddressingMode) -> bool {
         self.cmp_base(mode, self.a, bus)
     }
 
     /// Compare X Register (CPX)
-    /// https://www.nesdev.org/wiki/CPU_instructions#CPX
+    /// <https://www.nesdev.org/wiki/CPU_instructions#CPX>
     fn cpx(&mut self, bus: &mut Bus, mode: &AddressingMode) -> bool {
         self.cmp_base(mode, self.x, bus)
     }
 
     /// Compare Y Register (CPY)
-    /// https://www.nesdev.org/wiki/CPU_instructions#CPY
+    /// <https://www.nesdev.org/wiki/CPU_instructions#CPY>
     fn cpy(&mut self, bus: &mut Bus, mode: &AddressingMode) -> bool {
         self.cmp_base(mode, self.y, bus)
     }
@@ -630,7 +620,7 @@ impl Cpu {
     /// See: [BIT Instruction](https://www.nesdev.org/wiki/CPU_instructions#BIT)
     fn bit(&mut self, bus: &mut Bus, mode: &AddressingMode) -> bool {
         let (addr, page_crossed) = self.get_operand_address(bus, mode);
-        let data = self.mem_read(bus, addr);
+        let data = Self::mem_read(bus, addr);
         let and = self.a & data;
         
         if and == 0 {
@@ -671,7 +661,7 @@ impl Cpu {
             return NMI_CYCLES;
         }
         
-        let opcode = self.mem_read(bus, self.pc);
+        let opcode = Self::mem_read(bus, self.pc);
         self.pc += 1;
 
         let cycles = match opcode {
@@ -680,22 +670,22 @@ impl Cpu {
             0xA5 => { self.lda(bus, &AddressingMode::ZeroPage); self.pc += 1; 3 }
             0xB5 => { self.lda(bus, &AddressingMode::ZeroPageX); self.pc += 1; 4 }
             0xAD => { self.lda(bus, &AddressingMode::Absolute); self.pc += 2; 4 }
-            0xBD => { let pc = self.lda(bus, &AddressingMode::AbsoluteX); self.pc += 2; 4 + if pc { 1 } else { 0 } }
-            0xB9 => { let pc = self.lda(bus, &AddressingMode::AbsoluteY); self.pc += 2; 4 + if pc { 1 } else { 0 } }
+            0xBD => { let pc = self.lda(bus, &AddressingMode::AbsoluteX); self.pc += 2; 4 + u32::from(pc) }
+            0xB9 => { let pc = self.lda(bus, &AddressingMode::AbsoluteY); self.pc += 2; 4 + u32::from(pc) }
             0xA1 => { self.lda(bus, &AddressingMode::IndirectX); self.pc += 1; 6 }
-            0xB1 => { let pc = self.lda(bus, &AddressingMode::IndirectY); self.pc += 1; 5 + if pc { 1 } else { 0 } }
+            0xB1 => { let pc = self.lda(bus, &AddressingMode::IndirectY); self.pc += 1; 5 + u32::from(pc) }
             // LDX
             0xA2 => { self.ldx(bus, &AddressingMode::Immediate); self.pc += 1; 2 }
             0xA6 => { self.ldx(bus, &AddressingMode::ZeroPage); self.pc += 1; 3 }
             0xB6 => { self.ldx(bus, &AddressingMode::ZeroPageY); self.pc += 1; 4 }
             0xAE => { self.ldx(bus, &AddressingMode::Absolute); self.pc += 2; 4 }
-            0xBE => { let pc = self.ldx(bus, &AddressingMode::AbsoluteY); self.pc += 2; 4 + if pc { 1 } else { 0 } }
+            0xBE => { let pc = self.ldx(bus, &AddressingMode::AbsoluteY); self.pc += 2; 4 + u32::from(pc) }
             // LDY
             0xA0 => { self.ldy(bus, &AddressingMode::Immediate); self.pc += 1; 2 }
             0xA4 => { self.ldy(bus, &AddressingMode::ZeroPage); self.pc += 1; 3 }
             0xB4 => { self.ldy(bus, &AddressingMode::ZeroPageX); self.pc += 1; 4 }
             0xAC => { self.ldy(bus, &AddressingMode::Absolute); self.pc += 2; 4 }
-            0xBC => { let pc = self.ldy(bus, &AddressingMode::AbsoluteX); self.pc += 2; 4 + if pc { 1 } else { 0 } }
+            0xBC => { let pc = self.ldy(bus, &AddressingMode::AbsoluteX); self.pc += 2; 4 + u32::from(pc) }
             // STA
             0x85 => { self.sta(bus, &AddressingMode::ZeroPage); self.pc += 1; 3 }
             0x95 => { self.sta(bus, &AddressingMode::ZeroPageX); self.pc += 1; 4 }
@@ -718,46 +708,46 @@ impl Cpu {
             0x65 => { self.adc(bus, &AddressingMode::ZeroPage); self.pc += 1; 3 }
             0x75 => { self.adc(bus, &AddressingMode::ZeroPageX); self.pc += 1; 4 }
             0x6D => { self.adc(bus, &AddressingMode::Absolute); self.pc += 2; 4 }
-            0x7D => { let pc = self.adc(bus, &AddressingMode::AbsoluteX); self.pc += 2; 4 + if pc { 1 } else { 0 } }
-            0x79 => { let pc = self.adc(bus, &AddressingMode::AbsoluteY); self.pc += 2; 4 + if pc { 1 } else { 0 } }
+            0x7D => { let pc = self.adc(bus, &AddressingMode::AbsoluteX); self.pc += 2; 4 + u32::from(pc) }
+            0x79 => { let pc = self.adc(bus, &AddressingMode::AbsoluteY); self.pc += 2; 4 + u32::from(pc) }
             0x61 => { self.adc(bus, &AddressingMode::IndirectX); self.pc += 1; 6 }
-            0x71 => { let pc = self.adc(bus, &AddressingMode::IndirectY); self.pc += 1; 5 + if pc { 1 } else { 0 } }
+            0x71 => { let pc = self.adc(bus, &AddressingMode::IndirectY); self.pc += 1; 5 + u32::from(pc) }
             // SBC
             0xE9 => { self.sbc(bus, &AddressingMode::Immediate); self.pc += 1; 2 }
             0xE5 => { self.sbc(bus, &AddressingMode::ZeroPage); self.pc += 1; 3 }
             0xF5 => { self.sbc(bus, &AddressingMode::ZeroPageX); self.pc += 1; 4 }
             0xED => { self.sbc(bus, &AddressingMode::Absolute); self.pc += 2; 4 }
-            0xFD => { let pc = self.sbc(bus, &AddressingMode::AbsoluteX); self.pc += 2; 4 + if pc { 1 } else { 0 } }
-            0xF9 => { let pc = self.sbc(bus, &AddressingMode::AbsoluteY); self.pc += 2; 4 + if pc { 1 } else { 0 } }
+            0xFD => { let pc = self.sbc(bus, &AddressingMode::AbsoluteX); self.pc += 2; 4 + u32::from(pc) }
+            0xF9 => { let pc = self.sbc(bus, &AddressingMode::AbsoluteY); self.pc += 2; 4 + u32::from(pc) }
             0xE1 => { self.sbc(bus, &AddressingMode::IndirectX); self.pc += 1; 6 }
-            0xF1 => { let pc = self.sbc(bus, &AddressingMode::IndirectY); self.pc += 1; 5 + if pc { 1 } else { 0 } }
+            0xF1 => { let pc = self.sbc(bus, &AddressingMode::IndirectY); self.pc += 1; 5 + u32::from(pc) }
             // AND
             0x29 => { self.and(bus, &AddressingMode::Immediate); self.pc += 1; 2 }
             0x25 => { self.and(bus, &AddressingMode::ZeroPage); self.pc += 1; 3 }
             0x35 => { self.and(bus, &AddressingMode::ZeroPageX); self.pc += 1; 4 }
             0x2D => { self.and(bus, &AddressingMode::Absolute); self.pc += 2; 4 }
-            0x3D => { let pc = self.and(bus, &AddressingMode::AbsoluteX); self.pc += 2; 4 + if pc { 1 } else { 0 } }
-            0x39 => { let pc = self.and(bus, &AddressingMode::AbsoluteY); self.pc += 2; 4 + if pc { 1 } else { 0 } }
+            0x3D => { let pc = self.and(bus, &AddressingMode::AbsoluteX); self.pc += 2; 4 + u32::from(pc) }
+            0x39 => { let pc = self.and(bus, &AddressingMode::AbsoluteY); self.pc += 2; 4 + u32::from(pc) }
             0x21 => { self.and(bus, &AddressingMode::IndirectX); self.pc += 1; 6 }
-            0x31 => { let pc = self.and(bus, &AddressingMode::IndirectY); self.pc += 1; 5 + if pc { 1 } else { 0 } }
+            0x31 => { let pc = self.and(bus, &AddressingMode::IndirectY); self.pc += 1; 5 + u32::from(pc) }
             // EOR
             0x49 => { self.eor(bus, &AddressingMode::Immediate); self.pc += 1; 2 }
             0x45 => { self.eor(bus, &AddressingMode::ZeroPage); self.pc += 1; 3 }
             0x55 => { self.eor(bus, &AddressingMode::ZeroPageX); self.pc += 1; 4 }
             0x4D => { self.eor(bus, &AddressingMode::Absolute); self.pc += 2; 4 }
-            0x5D => { let pc = self.eor(bus, &AddressingMode::AbsoluteX); self.pc += 2; 4 + if pc { 1 } else { 0 } }
-            0x59 => { let pc = self.eor(bus, &AddressingMode::AbsoluteY); self.pc += 2; 4 + if pc { 1 } else { 0 } }
+            0x5D => { let pc = self.eor(bus, &AddressingMode::AbsoluteX); self.pc += 2; 4 + u32::from(pc) }
+            0x59 => { let pc = self.eor(bus, &AddressingMode::AbsoluteY); self.pc += 2; 4 + u32::from(pc) }
             0x41 => { self.eor(bus, &AddressingMode::IndirectX); self.pc += 1; 6 }
-            0x51 => { let pc = self.eor(bus, &AddressingMode::IndirectY); self.pc += 1; 5 + if pc { 1 } else { 0 } }
+            0x51 => { let pc = self.eor(bus, &AddressingMode::IndirectY); self.pc += 1; 5 + u32::from(pc) }
             // ORA
             0x09 => { self.ora(bus, &AddressingMode::Immediate); self.pc += 1; 2 }
             0x05 => { self.ora(bus, &AddressingMode::ZeroPage); self.pc += 1; 3 }
             0x15 => { self.ora(bus, &AddressingMode::ZeroPageX); self.pc += 1; 4 }
             0x0D => { self.ora(bus, &AddressingMode::Absolute); self.pc += 2; 4 }
-            0x1D => { let pc = self.ora(bus, &AddressingMode::AbsoluteX); self.pc += 2; 4 + if pc { 1 } else { 0 } }
-            0x19 => { let pc = self.ora(bus, &AddressingMode::AbsoluteY); self.pc += 2; 4 + if pc { 1 } else { 0 } }
+            0x1D => { let pc = self.ora(bus, &AddressingMode::AbsoluteX); self.pc += 2; 4 + u32::from(pc) }
+            0x19 => { let pc = self.ora(bus, &AddressingMode::AbsoluteY); self.pc += 2; 4 + u32::from(pc) }
             0x01 => { self.ora(bus, &AddressingMode::IndirectX); self.pc += 1; 6 }
-            0x11 => { let pc = self.ora(bus, &AddressingMode::IndirectY); self.pc += 1; 5 + if pc { 1 } else { 0 } }
+            0x11 => { let pc = self.ora(bus, &AddressingMode::IndirectY); self.pc += 1; 5 + u32::from(pc) }
 
             // ASL
             0x0A => { self.asl_a(); 2 }
@@ -806,10 +796,10 @@ impl Cpu {
             0xC5 => { self.cmp(bus, &AddressingMode::ZeroPage); self.pc += 1; 3 }
             0xD5 => { self.cmp(bus, &AddressingMode::ZeroPageX); self.pc += 1; 4 }
             0xCD => { self.cmp(bus, &AddressingMode::Absolute); self.pc += 2; 4 }
-            0xDD => { let pc = self.cmp(bus, &AddressingMode::AbsoluteX); self.pc += 2; 4 + if pc { 1 } else { 0 } }
-            0xD9 => { let pc = self.cmp(bus, &AddressingMode::AbsoluteY); self.pc += 2; 4 + if pc { 1 } else { 0 } }
+            0xDD => { let pc = self.cmp(bus, &AddressingMode::AbsoluteX); self.pc += 2; 4 + u32::from(pc) }
+            0xD9 => { let pc = self.cmp(bus, &AddressingMode::AbsoluteY); self.pc += 2; 4 + u32::from(pc) }
             0xC1 => { self.cmp(bus, &AddressingMode::IndirectX); self.pc += 1; 6 }
-            0xD1 => { let pc = self.cmp(bus, &AddressingMode::IndirectY); self.pc += 1; 5 + if pc { 1 } else { 0 } }
+            0xD1 => { let pc = self.cmp(bus, &AddressingMode::IndirectY); self.pc += 1; 5 + u32::from(pc) }
             
             0xE0 => { self.cpx(bus, &AddressingMode::Immediate); self.pc += 1; 2 }
             0xE4 => { self.cpx(bus, &AddressingMode::ZeroPage); self.pc += 1; 3 }
@@ -826,7 +816,7 @@ impl Cpu {
             // Jumps & Calls
             // https://www.nesdev.org/wiki/CPU_instructions#Jumps
             0x4C => { // JMP Absolute
-                self.pc = self.mem_read_u16(bus, self.pc);
+                self.pc = Self::mem_read_u16(bus, self.pc);
                 3
             }
             0x6C => { // JMP Indirect
@@ -835,7 +825,7 @@ impl Cpu {
             }
             0x20 => { // JSR (Jump to Subroutine)
                 self.stack_push_u16(bus, self.pc + 2 - 1);
-                self.pc = self.mem_read_u16(bus, self.pc);
+                self.pc = Self::mem_read_u16(bus, self.pc);
                 6
             }
             0x60 => { // RTS (Return from Subroutine)
@@ -908,7 +898,7 @@ impl Cpu {
             // https://www.nesdev.org/wiki/CPU_instructions#Stack_operations
             0x48 => { self.stack_push(bus, self.a); 3 } // PHA
             0x08 => { // PHP (Push Processor Status)
-                let mut flags = self.status.clone();
+                let mut flags = self.status;
                 // PHP and BRK set bits 4 and 5 on the stack
                 flags.insert(CpuFlags::BREAK);
                 flags.insert(CpuFlags::BREAK2);
@@ -940,7 +930,7 @@ impl Cpu {
             }
 
             _ => {
-                println!("Unimplemented Opcode: {:#X}", opcode);
+                println!("Unimplemented Opcode: {opcode:#X}");
                 2
             }
         };

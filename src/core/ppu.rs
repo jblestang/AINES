@@ -163,14 +163,11 @@ pub const LOOPY_NAMETABLE_MASK: u16 = 0x0C00;
 pub const LOOPY_COARSE_X_MASK: u16  = 0x001F;
 pub const LOOPY_COARSE_Y_MASK: u16  = 0x03E0;
 pub const LOOPY_FINE_Y_MASK: u16    = 0x7000;
-pub const LOOPY_ADDR_MASK: u16      = 0x3FFF;
 
 /// Increment for the Fine Y portion of the Loopy address (Bit 12)
 pub const LOOPY_FINE_Y_INCREMENT: u16 = 0x1000;
 /// Bit for the vertical nametable selection in Loopy address (Bit 11)
 pub const LOOPY_VERTICAL_NAMETABLE_BIT: u16 = 0x0800;
-/// Bit for the horizontal nametable selection in Loopy address (Bit 10)
-pub const LOOPY_HORIZONTAL_NAMETABLE_BIT: u16 = 0x0400;
 
 /// Mask used to clear horizontal scroll bits (Coarse X and low Nametable bit) before reload
 pub const LOOPY_HORIZONTAL_RELOAD_MASK: u16 = 0xFBE0;
@@ -292,34 +289,34 @@ impl Ppu {
             self.nmi_interrupt = true;
         }
         // Update temporary VRAM address with nametable bits (bits 10-11)
-        self.t = (self.t & !LOOPY_NAMETABLE_MASK) | (((value as u16) & 0x03) << 10);
+        self.t = (self.t & !LOOPY_NAMETABLE_MASK) | ((u16::from(value) & 0x03) << 10);
     }
 
     pub fn write_to_scroll(&mut self, value: u8) {
-        if !self.w {
-            // First write: Coarse X (bits 0-4) and Fine X (stored in 'x' register)
-            self.t = (self.t & !LOOPY_COARSE_X_MASK) | ((value as u16) >> 3);
-            self.x = value & 0x07;
-            self.w = true;
-        } else {
+        if self.w {
             // Second write: Fine Y (bits 12-14) and Coarse Y (bits 5-9)
             self.t = (self.t & !LOOPY_FINE_Y_MASK & !LOOPY_COARSE_Y_MASK) 
-                   | (((value as u16) & 0x07) << 12) 
-                   | (((value as u16) & 0xF8) << 2);
+                   | ((u16::from(value) & 0x07) << 12) 
+                   | ((u16::from(value) & 0xF8) << 2);
             self.w = false;
+        } else {
+            // First write: Coarse X (bits 0-4) and Fine X (stored in 'x' register)
+            self.t = (self.t & !LOOPY_COARSE_X_MASK) | (u16::from(value) >> 3);
+            self.x = value & 0x07;
+            self.w = true;
         }
     }
 
     pub fn write_to_addr(&mut self, value: u8) {
-        if !self.w {
-            // First write: High byte of address (bits 8-13, bit 14 is cleared)
-            self.t = (self.t & ADDR_LOW_BYTE_MASK) | (((value as u16) & 0x3F) << 8);
-            self.w = true;
-        } else {
+        if self.w {
             // Second write: Low byte of address
-            self.t = (self.t & ADDR_HIGH_BYTE_MASK) | (value as u16);
+            self.t = (self.t & ADDR_HIGH_BYTE_MASK) | u16::from(value);
             self.v = self.t;
             self.w = false;
+        } else {
+            // First write: High byte of address (bits 8-13, bit 14 is cleared)
+            self.t = (self.t & ADDR_LOW_BYTE_MASK) | ((u16::from(value) & 0x3F) << 8);
+            self.w = true;
         }
     }
 
@@ -344,7 +341,7 @@ impl Ppu {
                 };
                 
                 // Palette read is immediate, no buffer delay
-                if addr >= PALETTE_BASE && addr < PALETTE_BASE + PALETTE_SIZE {
+                if (PALETTE_BASE..PALETTE_BASE + PALETTE_SIZE).contains(&addr) {
                     let mut pal_addr = addr & PALETTE_MASK;
                     if pal_addr == PALETTE_MIRROR_0 || pal_addr == PALETTE_MIRROR_1 || pal_addr == PALETTE_MIRROR_2 || pal_addr == PALETTE_MIRROR_3 {
                         pal_addr -= PALETTE_MIRROR_MASK;
@@ -380,7 +377,7 @@ impl Ppu {
                 match addr {
                     CHR_ROM_START..=CHR_ROM_END => { /* CHR ROM is generally read-only */ }
                     VRAM_NT_START..=VRAM_NT_END => self.vram[self.mirror_vram_addr(addr) as usize] = data,
-                    _ if addr >= PALETTE_BASE && addr < PALETTE_BASE + PALETTE_SIZE => {
+                    _ if (PALETTE_BASE..PALETTE_BASE + PALETTE_SIZE).contains(&addr) => {
                         let mut pal_addr = addr & PALETTE_MASK;
                         // Addresses $3F10/$3F14/$3F18/$3F1C are mirrors of $3F00/$3F04/$3F08/$3F0C
                         if pal_addr == PALETTE_MIRROR_0 || pal_addr == PALETTE_MIRROR_1 || pal_addr == PALETTE_MIRROR_2 || pal_addr == PALETTE_MIRROR_3 {
@@ -403,22 +400,19 @@ impl Ppu {
     pub fn step(&mut self) -> bool {
         self.cycles += 1;
 
-        if self.cycles == 256 {
-            if self.scanline < SCREEN_HEIGHT as u16 {
+        if self.cycles == 256
+            && self.scanline < SCREEN_HEIGHT as u16 {
                 self.render_scanline(self.scanline);
             }
-        }
 
         if self.cycles >= CYCLES_PER_SCANLINE {
             self.cycles = 0;
             
-            if self.scanline < SCREEN_HEIGHT as u16 {
-                if self.mask & MaskFlags::RENDER_ENABLED.bits() != 0 {
+            if self.scanline < SCREEN_HEIGHT as u16
+                && self.mask & MaskFlags::RENDER_ENABLED.bits() != 0 {
                     // --- LOOPY SCROLLING ALGORITHM: VERTICAL INCREMENT ---
                     // 1. Increment fine Y (bits 12-14)
-                    if (self.v & LOOPY_FINE_Y_MASK) != LOOPY_FINE_Y_MASK {
-                        self.v += LOOPY_FINE_Y_INCREMENT;
-                    } else {
+                    if (self.v & LOOPY_FINE_Y_MASK) == LOOPY_FINE_Y_MASK {
                         // 2. Fine Y overflowed, reset it and increment coarse Y
                         self.v &= !LOOPY_FINE_Y_MASK;
                         let mut y_coarse = (self.v & LOOPY_COARSE_Y_MASK) >> 5;
@@ -433,13 +427,14 @@ impl Ppu {
                             y_coarse += 1;
                         }
                         self.v = (self.v & !LOOPY_COARSE_Y_MASK) | (y_coarse << 5);
+                    } else {
+                        self.v += LOOPY_FINE_Y_INCREMENT;
                     }
                     // --- HORIZONTAL RESET ---
                     // At the end of each scanline, if rendering is enabled,
                     // horizontal bits are reloaded from 't' into 'v'.
                     self.v = (self.v & LOOPY_HORIZONTAL_RELOAD_MASK) | (self.t & LOOPY_HORIZONTAL_RELOAD_BITS);
                 }
-            }
 
             self.scanline += 1;
 
@@ -483,7 +478,7 @@ impl Ppu {
         // 4. **Pattern Fetch**: Retrieve the 2-bit pixel data from the Pattern Table (CHR-ROM).
         // 5. **Pixel Selection**: Use fine X/Y to select the specific pixel from the 8x8 tile.
         if self.mask & MaskFlags::SHOW_BACKGROUND.bits() != 0 {
-            let fine_x = self.x as u16;
+            let fine_x = u16::from(self.x);
             for screen_x in 0..SCREEN_WIDTH as u16 {
                 // Horizontal scrolling math:
                 // total_x is the absolute pixel offset in the virtual 512px horizontal space.
@@ -494,7 +489,7 @@ impl Ppu {
                 // Final coarse X wraps within a 32-tile nametable.
                 let final_coarse_x = (base_coarse_x + coarse_x_inc) % 32;
                 // If coarse_x_inc caused a wrap-around, we toggle the horizontal nametable bit.
-                let final_nt = ((self.v >> 10) & 0x03) ^ ((base_coarse_x + coarse_x_inc) / 32) as u16;
+                let final_nt = ((self.v >> 10) & 0x03) ^ ((base_coarse_x + coarse_x_inc) / 32);
                 
                 // Construct the temporary VRAM address for THIS specific pixel.
                 let v = (self.v & !0x041F) | (final_nt << 10) | final_coarse_x;
@@ -506,7 +501,7 @@ impl Ppu {
                 
                 let nt_addr = NAMETABLE_BASE | (nt_select << 10) | (coarse_y << 5) | coarse_x;
                 let vram_idx = self.mirror_vram_addr(nt_addr) as usize;
-                let tile_id = if vram_idx < self.vram.len() { self.vram[vram_idx] as u16 } else { 0 };
+                let tile_id = if vram_idx < self.vram.len() { u16::from(self.vram[vram_idx]) } else { 0 };
                 
                 // Attribute Table Fetch
                 // https://www.nesdev.org/wiki/PPU_attribute_tables
@@ -533,7 +528,7 @@ impl Ppu {
                 let sys_color_idx = if color_val == 0 { 
                     self.palette_table[0] 
                 } else { 
-                    self.palette_table[(palette_idx as u16 * PALETTE_ENTRY_SIZE + color_val as u16) as usize] 
+                    self.palette_table[(u16::from(palette_idx) * PALETTE_ENTRY_SIZE + u16::from(color_val)) as usize] 
                 };
                 let color = SYSTEM_PALETTE[(sys_color_idx & SYSTEM_COLOR_MASK) as usize];
                 let fb_idx = (y as usize * SCREEN_WIDTH + screen_x as usize) * BYTES_PER_PIXEL;
@@ -552,12 +547,12 @@ impl Ppu {
             let s_bank = if self.ctrl & CtrlFlags::SPRITE_PATTERN_ADDR.bits() != 0 { PATTERN_TABLE_1 } else { PATTERN_TABLE_0 };
             for i in (0..OAM_SPRITE_COUNT).rev() {
                 let oam_idx = i * OAM_ENTRY_SIZE;
-                let sprite_y = self.oam_data[oam_idx] as u16;
+                let sprite_y = u16::from(self.oam_data[oam_idx]);
                 // Sprites are delayed by one scanline in hardware
                 if y >= sprite_y + SPRITE_Y_OFFSET && y < sprite_y + SPRITE_Y_OFFSET + SPRITE_HEIGHT_8X8 {
-                    let tile_id = self.oam_data[oam_idx + 1] as u16;
+                    let tile_id = u16::from(self.oam_data[oam_idx + 1]);
                     let attr = SpriteAttributes::from_bits_truncate(self.oam_data[oam_idx + 2]);
-                    let sprite_x = self.oam_data[oam_idx + 3] as u16;
+                    let sprite_x = u16::from(self.oam_data[oam_idx + 3]);
                     
                     let flip_h = attr.contains(SpriteAttributes::FLIP_HORIZ);
                     let flip_v = attr.contains(SpriteAttributes::FLIP_VERT);
@@ -592,7 +587,7 @@ impl Ppu {
 
                             let priority = attr.contains(SpriteAttributes::PRIORITY);
                             if !priority || !bg_opaque[screen_x as usize] {
-                                let sys_idx = self.palette_table[(palette_idx as u16 * PALETTE_ENTRY_SIZE + color_val as u16) as usize];
+                                let sys_idx = self.palette_table[(u16::from(palette_idx) * PALETTE_ENTRY_SIZE + u16::from(color_val)) as usize];
                                 let color = SYSTEM_PALETTE[(sys_idx & SYSTEM_COLOR_MASK) as usize];
                                 let fb_idx = (y as usize * SCREEN_WIDTH + screen_x as usize) * BYTES_PER_PIXEL;
                                 
