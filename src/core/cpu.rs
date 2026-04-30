@@ -964,6 +964,8 @@ mod tests {
         }
     }
 
+    /// **Objective**: Verify that the LDA (Load Accumulator) instruction correctly loads 
+    /// immediate data into the A register.
     #[test]
     fn test_0xa9_lda_immediate_load_data() {
         let mut test_bus = TestBus::new();
@@ -980,6 +982,8 @@ mod tests {
         assert!(!cpu.status.contains(CpuFlags::NEGATIVE));
     }
 
+    /// **Objective**: Verify that the LDA instruction correctly sets the Zero flag when 
+    /// loading a value of 0x00.
     #[test]
     fn test_0xa9_lda_zero_flag() {
         let mut test_bus = TestBus::new();
@@ -992,6 +996,8 @@ mod tests {
         assert!(cpu.status.contains(CpuFlags::ZERO));
     }
 
+    /// **Objective**: Verify that the TAX (Transfer Accumulator to X) instruction correctly 
+    /// moves data between registers.
     #[test]
     fn test_0xaa_tax_move_a_to_x() {
         let mut test_bus = TestBus::new();
@@ -1004,6 +1010,8 @@ mod tests {
         assert_eq!(cpu.x, 10);
     }
 
+    /// **Objective**: Integration test verifying a sequence of dependent instructions 
+    /// (LDA, TAX, INX) to ensure state consistency across steps.
     #[test]
     fn test_5_ops_working_together() {
         let mut test_bus = TestBus::new();
@@ -1022,6 +1030,8 @@ mod tests {
         assert_eq!(cpu.x, 0xc1);
     }
 
+    /// **Objective**: Verify that the INX (Increment X) instruction correctly wraps from 
+    /// 0xFF to 0x00 (standard 8-bit overflow).
     #[test]
     fn test_inx_overflow() {
         let mut test_bus = TestBus::new();
@@ -1034,6 +1044,8 @@ mod tests {
         assert_eq!(cpu.x, 0);
     }
 
+    /// **Objective**: Verify that the ADC (Add with Carry) instruction correctly performs 
+    /// addition when the carry flag is clear.
     #[test]
     fn test_adc_no_carry() {
         let mut test_bus = TestBus::new();
@@ -1048,6 +1060,8 @@ mod tests {
         assert!(!cpu.status.contains(CpuFlags::CARRY));
     }
 
+    /// **Objective**: Verify that the ADC instruction correctly sets the Carry and Zero 
+    /// flags during an 8-bit overflow.
     #[test]
     fn test_adc_with_carry() {
         let mut test_bus = TestBus::new();
@@ -1063,6 +1077,8 @@ mod tests {
         assert!(cpu.status.contains(CpuFlags::ZERO));
     }
 
+    /// **Objective**: Verify that the SBC (Subtract with Carry) instruction correctly 
+    /// performs subtraction using the inverted carry bit (standard 6502 logic).
     #[test]
     fn test_sbc_no_carry() {
         let mut test_bus = TestBus::new();
@@ -1078,6 +1094,8 @@ mod tests {
         assert!(cpu.status.contains(CpuFlags::CARRY));
     }
 
+    /// **Objective**: Verify that the AND instruction correctly performs bitwise logical 
+    /// AND between the accumulator and immediate data.
     #[test]
     fn test_logical_and() {
         let mut test_bus = TestBus::new();
@@ -1091,6 +1109,8 @@ mod tests {
         assert_eq!(cpu.a, 0b1000_1000);
     }
 
+    /// **Objective**: Verify that a conditional branch (BEQ) correctly updates the 
+    /// Program Counter and consumes the correct number of cycles when taken.
     #[test]
     fn test_branch_taken() {
         let mut test_bus = TestBus::new();
@@ -1105,6 +1125,8 @@ mod tests {
         assert_eq!(cycles, 3); // 2 base + 1 branch taken
     }
 
+    /// **Objective**: Verify that a conditional branch correctly continues execution 
+    /// at the next instruction when the condition is not met.
     #[test]
     fn test_branch_not_taken() {
         let mut test_bus = TestBus::new();

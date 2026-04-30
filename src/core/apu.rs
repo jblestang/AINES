@@ -633,6 +633,8 @@ impl Apu {
 mod tests {
     use super::*;
 
+    /// **Objective**: Verify that the APU Envelope generator correctly handles decay 
+    /// levels and start-flag reloads for volume synthesis.
     #[test]
     fn test_envelope_decay() {
         let mut env = Envelope::new();
@@ -647,6 +649,8 @@ mod tests {
         assert_eq!(env.decay_count, 14);
     }
 
+    /// **Objective**: Verify that the Pulse channel timer correctly reloads its period 
+    /// when the counter reaches zero, ensuring stable audio frequency.
     #[test]
     fn test_pulse_timer_reload() {
         let mut pulse = PulseChannel::new(false);
@@ -658,6 +662,8 @@ mod tests {
         assert_eq!(pulse.timer_value, 100);
     }
 
+    /// **Objective**: Verify that the Pulse channel correctly implements duty cycle 
+    /// bit-sequences (e.g., 12.5% duty) to generate different wave timbres.
     #[test]
     fn test_pulse_duty_cycle() {
         let mut pulse = PulseChannel::new(false);

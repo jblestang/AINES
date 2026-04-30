@@ -611,6 +611,8 @@ mod tests {
     use super::*;
     use crate::core::bus::PPU_REG_MIRROR_MASK;
 
+    /// **Objective**: Verify that VRAM addresses are correctly mirrored for Vertical Mirroring 
+    /// configuration (standard NROM-style).
     #[test]
     fn test_vram_mirroring_vertical() {
         let mut ppu = Ppu::new(vec![0; 0x2000]);
@@ -627,6 +629,8 @@ mod tests {
         assert_eq!(ppu.mirror_vram_addr(0x2C00), 0x0400);
     }
 
+    /// **Objective**: Verify that VRAM addresses are correctly mirrored for Horizontal Mirroring 
+    /// configuration (standard NROM-style).
     #[test]
     fn test_vram_mirroring_horizontal() {
         let mut ppu = Ppu::new(vec![0; 0x2000]);
@@ -643,6 +647,8 @@ mod tests {
         assert_eq!(ppu.mirror_vram_addr(0x2C00), 0x0400);
     }
 
+    /// **Objective**: Verify that reading the PPUSTATUS register correctly clears the 
+    /// VBlank flag and resets the internal address latch.
     #[test]
     fn test_ppu_register_mirroring() {
         // Register $2008 mirrors $2000
@@ -656,6 +662,8 @@ mod tests {
         assert_eq!(ppu.status, 0x00); // VBlank should be cleared after read
     }
 
+    /// **Objective**: Verify that palette memory mirrors ($3F10-$3F1F) correctly point 
+    /// to the base palette addresses ($3F00-$3F0F) in VRAM.
     #[test]
     fn test_palette_mirroring() {
         let mut ppu = Ppu::new(vec![0; 0x2000]);
