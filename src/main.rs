@@ -23,6 +23,16 @@ use crate::core::bus::Bus;
 use crate::core::cartridge::Cartridge;
 use crate::core::cpu::Cpu;
 use crate::core::joypad::JoypadButton;
+use crate::core::ppu::{SCREEN_WIDTH, SCREEN_HEIGHT, OPAQUE_ALPHA, RENDER_SCALE};
+
+/// CPU Clock frequency for NTSC NES (1.789773 MHz)
+pub const NTSC_CPU_CLOCK: f32 = 1_789_773.0;
+/// The ratio of PPU cycles per CPU cycle (3:1 for NTSC)
+pub const PPU_CPU_CYCLE_RATIO: u32 = 3;
+/// Target audio buffer headroom (number of free samples to maintain)
+pub const AUDIO_BUFFER_HEADROOM: usize = 1024;
+/// Internal buffer size for the audio ringbuffer
+pub const AUDIO_RINGBUFFER_SIZE: usize = 4096;
 
 // The central emulator resource
 #[derive(Resource)]
@@ -57,7 +67,7 @@ fn main() {
         .add_plugins(DefaultPlugins.set(ImagePlugin::default_nearest()).set(WindowPlugin {
             primary_window: Some(Window {
                 title: "AINES".into(),
-                resolution: (512, 480).into(),
+                resolution: ((SCREEN_WIDTH as f32 * RENDER_SCALE) as u32, (SCREEN_HEIGHT as f32 * RENDER_SCALE) as u32).into(),
                 ..default()
             }),
             ..default()
@@ -80,8 +90,8 @@ fn setup(
 
     // Create a 256x240 image for the NES screen
     let size = Extent3d {
-        width: 256,
-        height: 240,
+        width: SCREEN_WIDTH as u32,
+        height: SCREEN_HEIGHT as u32,
         ..default()
     };
     
@@ -89,7 +99,7 @@ fn setup(
     let image = Image::new_fill(
         size,
         TextureDimension::D2,
-        &[0, 0, 0, 255],
+        &[0, 0, 0, OPAQUE_ALPHA],
         TextureFormat::Rgba8UnormSrgb,
         bevy::asset::RenderAssetUsages::MAIN_WORLD | bevy::asset::RenderAssetUsages::RENDER_WORLD,
     );
@@ -101,10 +111,9 @@ fn setup(
     commands.spawn((
         Sprite {
             image: image_handle,
-            // custom_size: Some(Vec2::new(512.0, 480.0)),
             ..default()
         },
-        Transform::from_scale(Vec3::new(2.0, 2.0, 1.0)), // Scale 2x for 512x480
+        Transform::from_scale(Vec3::new(RENDER_SCALE, RENDER_SCALE, 1.0)),
         ScreenSprite,
     ));
 
@@ -115,7 +124,7 @@ fn setup(
     let sample_rate = config.sample_rate().0 as f32;
     let channels = config.channels();
     
-    let rb = HeapRb::<f32>::new(4096);
+    let rb = HeapRb::<f32>::new(AUDIO_RINGBUFFER_SIZE);
     let (producer, mut consumer) = rb.split();
     
     let _stream = device.build_output_stream(
@@ -220,17 +229,17 @@ fn emulator_system(
             println!("START button pressed!");
         }
         emu.bus.joypad1.set_button_pressed_status(JoypadButton::START, keyboard_input.pressed(KeyCode::Enter));
-        emu.bus.joypad1.set_button_pressed_status(JoypadButton::SELECT, keyboard_input.pressed(KeyCode::ShiftRight));
+        emu.bus.joypad1.set_button_pressed_status(JoypadButton::SELECT, keyboard_input.pressed(KeyCode::ShiftLeft));
 
         let mut updated = false;
 
         // Sampling rate tracking
         static mut SAMPLE_ACCUMULATOR: f32 = 0.0;
-        let sample_step = 1_789_773.0 / audio.sample_rate; // Hardware-accurate ratio
+        let sample_step = NTSC_CPU_CLOCK / audio.sample_rate; // Hardware-accurate ratio
 
         // Audio-driven sync: Run emulator until audio buffer is sufficiently full
         // We want to keep about 2048-3072 samples in the 4096 buffer
-        while audio.producer.free_len() > 1024 {
+        while audio.producer.free_len() > AUDIO_BUFFER_HEADROOM {
             let mut _frame_complete = false;
             let NesEmulator { cpu, bus, .. } = &mut *emu;
 
@@ -239,6 +248,9 @@ fn emulator_system(
                 for _ in 0..cycles {
                     bus.apu.step();
                     
+                    // SAFETY: SAMPLE_ACCUMULATOR is a static mut used for high-fidelity audio 
+                    // resample tracking. Access is safe here because this Bevy system is 
+                    // guaranteed to run on the main thread and not concurrently with itself.
                     unsafe {
                         SAMPLE_ACCUMULATOR += 1.0;
                         if SAMPLE_ACCUMULATOR >= sample_step {
@@ -250,7 +262,7 @@ fn emulator_system(
                         }
                     }
 
-                    for _ in 0..3 {
+                    for _ in 0..PPU_CPU_CYCLE_RATIO {
                         _frame_complete = bus.ppu.step();
                         if _frame_complete { break; }
                     }

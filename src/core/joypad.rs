@@ -13,6 +13,9 @@ bitflags::bitflags! {
     }
 }
 
+/// Total number of buttons on a standard NES controller
+pub const BUTTON_COUNT: u8 = 8;
+
 pub struct Joypad {
     strobe: bool,
     button_index: u8,
@@ -35,14 +38,20 @@ impl Joypad {
         }
     }
 
+    /// Reads the status of the next button in the sequence.
+    /// 
+    /// # Polling Algorithm
+    /// The NES polls controllers by first setting 'strobe' to 1 (resetting the shift register),
+    /// then setting it to 0. Subsequent reads from $4016/$4017 shift the register, 
+    /// returning the status of each button in order (A, B, Select, Start, Up, Down, Left, Right).
     pub fn read(&mut self) -> u8 {
-        if self.button_index > 7 {
+        if self.button_index >= BUTTON_COUNT {
             return 1;
         }
         
         let response = (self.button_status.bits() & (1 << self.button_index)) >> self.button_index;
         
-        if (!self.strobe) && self.button_index <= 7 {
+        if (!self.strobe) && self.button_index < BUTTON_COUNT {
             self.button_index += 1;
         }
         
