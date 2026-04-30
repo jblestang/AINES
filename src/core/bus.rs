@@ -153,4 +153,97 @@ mod tests {
         assert_eq!(bus.read(0x8000), 0xAA);
         assert_eq!(bus.read(0xC000), 0xAA);
     }
+
+    /// **Objective**: Verify that CPU RAM ($0000-$07FF) is mirrored 
+    /// every 2KB up to $1FFF.
+    #[test]
+    fn test_bus_ram_mirroring() {
+        let cartridge = Cartridge {
+            prg_rom: vec![0; 16384],
+            chr_rom: vec![0; 8192],
+            mapper: 0,
+            vertical_mirroring: true,
+        };
+        let mut bus = Bus::new(cartridge);
+        
+        bus.write(0x0005, 0x55);
+        assert_eq!(bus.read(0x0805), 0x55);
+        assert_eq!(bus.read(0x1005), 0x55);
+        assert_eq!(bus.read(0x1805), 0x55);
+    }
+
+    /// **Objective**: Verify that PPU registers ($2000-$2007) are mirrored 
+    /// every 8 bytes up to $3FFF.
+    #[test]
+    fn test_bus_ppu_mirroring() {
+        let cartridge = Cartridge {
+            prg_rom: vec![0; 16384],
+            chr_rom: vec![0; 8192],
+            mapper: 0,
+            vertical_mirroring: true,
+        };
+        let mut bus = Bus::new(cartridge);
+        
+        bus.write(0x2000, 0b1000_0000); // PPUCTRL
+        assert_eq!(bus.ppu.ctrl, 0b1000_0000);
+        
+        bus.write(0x2008, 0b0000_0000); // Mirror of $2000
+        assert_eq!(bus.ppu.ctrl, 0b0000_0000);
+    }
+
+    /// **Objective**: Verify that writing to $4014 (OAM DMA) correctly 
+    /// copies 256 bytes from CPU RAM to PPU OAM.
+    #[test]
+    fn test_bus_oam_dma() {
+        let cartridge = Cartridge {
+            prg_rom: vec![0; 16384],
+            chr_rom: vec![0; 8192],
+            mapper: 0,
+            vertical_mirroring: true,
+        };
+        let mut bus = Bus::new(cartridge);
+        
+        // Fill RAM at $0200
+        for i in 0..256 {
+            bus.write(0x0200 + i as u16, i as u8);
+        }
+        
+        // Trigger DMA
+        bus.write(0x4014, 0x02);
+        
+        for i in 0..256 {
+            assert_eq!(bus.ppu.oam_data[i], i as u8);
+        }
+        assert!(bus.dma_cycles > 500); // 513 or 514 cycles
+    }
+
+    /// **Objective**: Verify that routing falls back correctly for unmapped memory
+    /// and correctly dispatches to APU/Joypad.
+    #[test]
+    fn test_bus_routing_edge_cases() {
+        let cartridge = Cartridge {
+            prg_rom: vec![0; 16384],
+            chr_rom: vec![0; 8192],
+            mapper: 0,
+            vertical_mirroring: true,
+        };
+        let mut bus = Bus::new(cartridge);
+        
+        // APU read/write
+        bus.write(0x4000, 0x55); // Pulse 1
+        assert_eq!(bus.read(0x4015), 0); // APU status
+        
+        // Joypad read/write
+        bus.write(0x4016, 1); // Strobe Joypad 1
+        bus.write(0x4016, 0);
+        assert_eq!(bus.read(0x4016), 0); // Read Joypad 1
+        assert_eq!(bus.read(0x4017), 0); // Read Joypad 2 (Unimplemented)
+        
+        // ROM write (should do nothing / be ignored)
+        bus.write(0x8000, 0xFF);
+        
+        // Invalid/Unmapped memory read/write
+        bus.write(0x5000, 0xFF);
+        assert_eq!(bus.read(0x5000), 0);
+    }
 }

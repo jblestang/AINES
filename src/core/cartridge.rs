@@ -46,6 +46,10 @@ impl Cartridge {
         let mapper2 = data[7] >> 4;
         let mapper = (mapper2 << 4) | mapper1;
 
+        if mapper != 0 {
+            return Err(format!("Unsupported mapper: {}", mapper));
+        }
+
         let prg_size = prg_banks * PRG_BANK_SIZE;
         let chr_size = chr_banks * CHR_BANK_SIZE;
 
@@ -123,5 +127,64 @@ mod tests {
         
         let cart = Cartridge::load_rom(&data).unwrap();
         assert_eq!(cart.prg_rom[0], 0xBE);
+    }
+
+    /// **Objective**: Verify that the horizontal and vertical mirroring flags 
+    /// are correctly parsed from the iNES header.
+    #[test]
+    fn test_cartridge_mirroring_flags() {
+        let mut data = vec![0; INES_HEADER_SIZE + PRG_BANK_SIZE];
+        data[0..4].copy_from_slice(INES_MAGIC);
+        data[4] = 1;
+        
+        // Vertical mirroring (Bit 0 set)
+        data[6] = 0x01;
+        let cart_v = Cartridge::load_rom(&data).unwrap();
+        assert_eq!(cart_v.vertical_mirroring, true);
+        
+        // Horizontal mirroring (Bit 0 clear)
+        data[6] = 0x00;
+        let cart_h = Cartridge::load_rom(&data).unwrap();
+        assert_eq!(cart_h.vertical_mirroring, false);
+    }
+
+    /// **Objective**: Verify that 32KB PRG-ROM (2 banks) is correctly loaded 
+    /// and stored as a single contiguous buffer.
+    #[test]
+    fn test_cartridge_32k_prg() {
+        let mut data = vec![0; INES_HEADER_SIZE + PRG_BANK_SIZE * 2];
+        data[0..4].copy_from_slice(INES_MAGIC);
+        data[4] = 2; // 2 PRG banks = 32KB
+        
+        data[INES_HEADER_SIZE] = 0x11;
+        data[INES_HEADER_SIZE + PRG_BANK_SIZE] = 0x22;
+        
+        let cart = Cartridge::load_rom(&data).unwrap();
+        assert_eq!(cart.prg_rom.len(), 32768);
+        assert_eq!(cart.prg_rom[0], 0x11);
+        assert_eq!(cart.prg_rom[PRG_BANK_SIZE], 0x22);
+    }
+
+    /// **Objective**: Verify that the Cartridge loader correctly rejects 
+    /// files with an invalid iNES magic header.
+    #[test]
+    fn test_cartridge_invalid_magic() {
+        let mut data = vec![0; 100];
+        data[0..4].copy_from_slice(b"NOTN");
+        let result = Cartridge::load_rom(&data);
+        assert!(result.is_err());
+    }
+
+    /// **Objective**: Verify that the Cartridge loader correctly rejects 
+    /// mappers that are not currently implemented (only Mapper 0 is supported).
+    #[test]
+    fn test_cartridge_unsupported_mapper() {
+        let mut data = vec![0; INES_HEADER_SIZE + PRG_BANK_SIZE];
+        data[0..4].copy_from_slice(INES_MAGIC);
+        data[4] = 1;
+        data[6] = 0x10; // Mapper 1 (upper nibble of flag 6)
+        
+        let result = Cartridge::load_rom(&data);
+        assert!(result.is_err());
     }
 }

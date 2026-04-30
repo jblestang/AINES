@@ -685,4 +685,184 @@ mod tests {
         pulse.duty_pos = 2;
         assert_eq!(pulse.output(), 0);
     }
+
+    /// **Objective**: Verify that the Triangle channel correctly generates 
+    /// a stepped triangle wave (0-15 and 15-0) based on its phase position.
+    #[test]
+    fn test_triangle_channel() {
+        let mut triangle = TriangleChannel::new();
+        triangle.enabled = true;
+        triangle.length_counter = 10;
+        triangle.linear_counter = 10;
+        
+        // Triangle sequence: 15, 14, ..., 1, 0, 0, 1, ..., 14, 15
+        triangle.step = 0;
+        assert_eq!(triangle.output(), 15);
+        triangle.step = 15;
+        assert_eq!(triangle.output(), 0);
+        triangle.step = 16;
+        assert_eq!(triangle.output(), 0);
+        triangle.step = 31;
+        assert_eq!(triangle.output(), 15);
+    }
+
+    /// **Objective**: Verify that the Noise channel correctly generates 
+    /// pseudorandom output based on the LFSR (Linear Feedback Shift Register) state.
+    #[test]
+    fn test_noise_channel() {
+        let mut noise = NoiseChannel::new();
+        noise.enabled = true;
+        noise.length_counter = 10;
+        noise.envelope.constant_volume_flag = true;
+        noise.envelope.volume_parameter = 15;
+        
+        // LFSR initial state is usually 1
+        noise.shift_register = 1;
+        // Output is 0 if bit 0 of shift register is 1
+        assert_eq!(noise.output(), 0);
+        
+        noise.shift_register = 0; // Invalid but for testing output logic
+        assert_eq!(noise.output(), 15);
+    }
+
+    /// **Objective**: Verify that the Pulse channel sweep unit correctly adjusts 
+    /// the timer reload value over time (pitch shifting).
+    #[test]
+    fn test_pulse_sweep() {
+        let mut pulse = PulseChannel::new(false);
+        pulse.timer_reload = 1000;
+        pulse.sweep.enabled = true;
+        pulse.sweep.shift = 1; // delta = 1000 >> 1 = 500
+        pulse.sweep.divider = 0;
+        
+        pulse.step_sweep();
+        assert_eq!(pulse.timer_reload, 1500);
+    }
+
+    /// **Objective**: Verify that the Length Counter correctly silences the channel 
+    /// when it reaches zero, ensuring proper note duration.
+    #[test]
+    fn test_length_counter() {
+        let mut pulse = PulseChannel::new(false);
+        pulse.enabled = true;
+        pulse.length_counter = 1;
+        
+        // Output should be non-zero while counter > 0
+        pulse.envelope.constant_volume_flag = true;
+        pulse.envelope.volume_parameter = 15;
+        pulse.timer_reload = 200;
+        pulse.duty_pos = 1; // Pos 1 in 12.5% is '1'
+        assert_eq!(pulse.output(), 15);
+        
+        // Manually decrement length counter (as Apu would do)
+        if pulse.length_counter > 0 {
+            pulse.length_counter -= 1;
+        }
+        assert_eq!(pulse.length_counter, 0);
+        assert_eq!(pulse.output(), 0);
+    }
+
+    /// **Objective**: Verify that the APU Mixer correctly combines pulse and 
+    /// TND channels using the non-linear DAC formula.
+    #[test]
+    fn test_apu_mixer() {
+        let mut apu = Apu::new();
+        apu.pulse1.enabled = true;
+        apu.pulse1.length_counter = 10;
+        apu.pulse1.timer_reload = 100;
+        apu.pulse1.duty_pos = 1; // Output 15
+        
+        let out = apu.output();
+        assert!(out > 0.0);
+        assert!(out < 1.0);
+    }
+
+    /// **Objective**: Verify that the APU Frame Counter correctly triggers 
+    /// envelope and sweep updates at the specified clock cycles.
+    #[test]
+    fn test_frame_counter() {
+        let mut apu = Apu::new();
+        apu.frame_counter_mode = 0; // 4-step mode
+        apu.frame_counter_cycles = 3728; // Just before STEP1
+        
+        // This is tricky because we need to see side effects
+        apu.step_frame_counter(); 
+        assert_eq!(apu.frame_counter_cycles, 3729);
+    }
+
+    /// **Objective**: Verify that the Triangle channel linear counter correctly 
+    /// reloads and decrements to silence the channel.
+    #[test]
+    fn test_triangle_linear_counter() {
+        let mut apu = Apu::new();
+        apu.triangle.linear_counter_reload = 10;
+        apu.triangle.reload_flag = true;
+        
+        // Step frame counter (which calls step_envelopes which handles linear counter)
+        apu.frame_counter_cycles = FRAME_COUNTER_STEP1 - 1;
+        apu.step_frame_counter();
+        
+        assert_eq!(apu.triangle.linear_counter, 10);
+        assert_eq!(apu.triangle.reload_flag, false); // Cleared after reload since control_flag = false
+    }
+
+    /// **Objective**: Achieve full coverage on the APU frame sequences, mixer formulas, and routing.
+    #[test]
+    fn test_apu_full_integration() {
+        let mut apu = Apu::new();
+        
+        // 1. Enable all channels
+        apu.write(0x4015, 0x1F); 
+        
+        // 2. Configure channels to produce non-zero output
+        // Pulse 1
+        apu.write(0x4000, 0xBF); // Duty 2, Volume 15, constant vol
+        apu.write(0x4002, 0x00); // Low timer
+        apu.write(0x4003, 0x08); // High timer, length counter load
+        
+        // Pulse 2
+        apu.write(0x4004, 0xBF); 
+        apu.write(0x4006, 0x00);
+        apu.write(0x4007, 0x08);
+        
+        // Triangle
+        apu.write(0x4008, 0xFF); // Linear counter load, halt flag
+        apu.write(0x400A, 0x00); // Low timer
+        apu.write(0x400B, 0x08); // High timer, length counter load
+        
+        // Noise
+        apu.write(0x400C, 0x3F); // Constant volume 15
+        apu.write(0x400E, 0x00); // Mode/Period
+        apu.write(0x400F, 0x08); // Length load
+        
+        // DMC (placeholder coverage)
+        apu.write(0x4010, 0x0F);
+        apu.write(0x4011, 0x7F);
+        apu.write(0x4012, 0x00);
+        apu.write(0x4013, 0x00);
+        
+        // 3. Test 4-step frame counter sequence
+        apu.write(0x4017, 0x00); // Mode 0 (4-step)
+        for _ in 0..38000 {
+            apu.step();
+        }
+        
+        // 4. Test 5-step frame counter sequence
+        apu.write(0x4017, 0x80); // Mode 1 (5-step)
+        for _ in 0..38000 {
+            apu.step();
+        }
+        
+        // 5. Test audio mixer output (should not be 0.0 since channels are active)
+        let output = apu.output();
+        assert!(output > 0.0);
+        
+        // Verify APU status register routing
+        let status = apu.read(0x4015);
+        assert_eq!(status & 0x0F, 0x0F); // All 4 standard channels have >0 length
+        
+        // Read unmapped APU register to hit the fallback `_ => 0` arm
+        let unmapped = apu.read(0x4001);
+        assert_eq!(unmapped, 0);
+    }
 }

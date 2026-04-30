@@ -101,4 +101,17 @@ mod tests {
         assert_eq!(joypad.read(), 1);
         assert_eq!(joypad.read(), 1);
     }
+
+    /// **Objective**: Verify that releasing a joypad button correctly updates 
+    /// the internal state to reflect a non-pressed status.
+    #[test]
+    fn test_joypad_button_release() {
+        let mut joypad = Joypad::new();
+        joypad.set_button_pressed_status(JoypadButton::BUTTON_A, true);
+        joypad.set_button_pressed_status(JoypadButton::BUTTON_A, false);
+        
+        joypad.write(1);
+        joypad.write(0);
+        assert_eq!(joypad.read(), 0);
+    }
 }

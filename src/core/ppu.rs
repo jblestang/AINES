@@ -726,4 +726,283 @@ mod tests {
         assert_eq!(ppu.frame_buffer[1], 84);
         assert_eq!(ppu.frame_buffer[2], 84);
     }
+
+    /// **Objective**: Verify that the OAMADDR and OAMDATA registers correctly manage 
+    /// the internal OAM memory for sprite storage.
+    #[test]
+    fn test_ppu_oam_access() {
+        let mut ppu = Ppu::new(vec![0; 0x2000]);
+        // Set OAM address to 0x10
+        ppu.write(PPU_REG_OAM_ADDR, 0x10);
+        // Write to OAMDATA
+        ppu.write(PPU_REG_OAM_DATA, 0xBC);
+        
+        assert_eq!(ppu.oam_data[0x10], 0xBC);
+        assert_eq!(ppu.oam_addr, 0x11); // Auto-increment
+    }
+
+    /// **Objective**: Verify that the PPU correctly applies palette indices from the 
+    /// Attribute Table to background pixels.
+    #[test]
+    fn test_render_attributes() {
+        let mut ppu = Ppu::new(vec![0; 0x2000]);
+        ppu.mask |= MaskFlags::SHOW_BACKGROUND.bits();
+        
+        // Setup tile 0 as opaque
+        for i in 0..8 { ppu.chr_rom[i] = 0xFF; }
+        
+        // Setup Attribute Table (0x23C0) for first 16x16 block
+        // We set bits 0-1 to 1 (second palette)
+        ppu.vram[0x03C0] = 0x01; 
+        
+        // Setup Palette 1 (0x3F05)
+        ppu.palette_table[5] = 0x20; // White (236, 238, 236)
+        
+        ppu.render_scanline(0);
+        
+        assert_eq!(ppu.frame_buffer[0], 236);
+    }
+
+    /// **Objective**: Verify that writes to PPUDATA correctly increment the 
+    /// internal address pointer according to the PPUCTRL increment flag.
+    #[test]
+    fn test_ppu_vram_increment() {
+        let mut ppu = Ppu::new(vec![0; 0x2000]);
+        // Increment by 32
+        ppu.write(PPU_REG_CTRL, CtrlFlags::VRAM_ADD_INCREMENT.bits());
+        ppu.write(PPU_REG_ADDR, 0x20);
+        ppu.write(PPU_REG_ADDR, 0x00); // Address $2000
+        
+        ppu.write(PPU_REG_DATA, 0x11);
+        assert_eq!(ppu.v, 0x2020); // $2000 + 32
+    }
+
+    /// **Objective**: Verify that writes to PPUSCROLL correctly update the 
+    /// temporary address (t) and fine-X registers.
+    #[test]
+    fn test_ppu_scroll_writes() {
+        let mut ppu = Ppu::new(vec![0; 0x2000]);
+        // First write: fine X and coarse X
+        ppu.write(PPU_REG_SCROLL, 0x7D); // fine X = 5, coarse X = 15
+        assert_eq!(ppu.x, 0x05);
+        assert_eq!(ppu.t & 0x001F, 0x0F);
+        
+        // Second write: fine Y and coarse Y
+        ppu.write(PPU_REG_SCROLL, 0x5E); 
+        assert!(ppu.t & 0x7000 != 0); // Fine Y bits
+    }
+
+    /// **Objective**: Verify that the PPU correctly renders sprites with 
+    /// foreground/background priority settings.
+    #[test]
+    fn test_render_sprites() {
+        let mut ppu = Ppu::new(vec![0; 0x2000]);
+        ppu.oam_data = [0xFF; 256];
+        ppu.mask |= MaskFlags::SHOW_SPRITES.bits();
+        ppu.ctrl |= CtrlFlags::SPRITE_PATTERN_ADDR.bits();
+        
+        // Setup sprite 0 at (0, 0)
+        ppu.oam_data[0] = 0;    // Y = 0
+        ppu.oam_data[1] = 0x00; // Tile = 0
+        ppu.oam_data[2] = 0x00; // Attributes (Priority = 0: In front)
+        ppu.oam_data[3] = 0;    // X = 0
+        
+        // Setup tile 1 in CHR-ROM
+        for i in 0..8 { ppu.chr_rom[0x1000 + i] = 0xFF; } // Opaque
+        
+        // Setup palette for sprite 0
+        ppu.palette_table[0x11] = 0x30; // White (236, 238, 236)
+        
+        ppu.render_scanline(1); // Sprite at Y=0 appears on scanline 1
+        
+        // Check first pixel
+        assert_eq!(ppu.frame_buffer[SCREEN_WIDTH * 4], 236);
+    }
+
+    /// **Objective**: Verify that reading PPUSTATUS correctly clears the VBlank 
+    /// flag and resets the address latch (w).
+    #[test]
+    fn test_ppu_status_read_side_effects() {
+        let mut ppu = Ppu::new(vec![0; 0x2000]);
+        ppu.status |= StatusFlags::VBLANK_STARTED.bits();
+        ppu.w = true; // Address latch set
+        
+        let status = ppu.read(PPU_REG_STATUS);
+        
+        assert!(status & StatusFlags::VBLANK_STARTED.bits() != 0);
+        assert!(ppu.status & StatusFlags::VBLANK_STARTED.bits() == 0); // Cleared after read
+        assert_eq!(ppu.w, false); // Latch reset
+    }
+
+    /// **Objective**: Verify that palette RAM writes to $3F10, $3F14, $3F18, $3F1C 
+    /// are correctly mirrored to $3F00, $3F04, $3F08, $3F0C.
+    #[test]
+    fn test_ppu_palette_mirroring_writes() {
+        let mut ppu = Ppu::new(vec![0; 0x2000]);
+        
+        // Write to $3F10 (mirror of $3F00)
+        ppu.write(PPU_REG_ADDR, 0x3F);
+        ppu.write(PPU_REG_ADDR, 0x10);
+        ppu.write(PPU_REG_DATA, 0x12);
+        
+        assert_eq!(ppu.palette_table[0x00], 0x12);
+    }
+
+    /// **Objective**: Verify that OAMDATA ($2004) reads return the value at OAMADDR 
+    /// and that writes correctly increment OAMADDR.
+    #[test]
+    fn test_ppu_oam_read_write() {
+        let mut ppu = Ppu::new(vec![0; 0x2000]);
+        ppu.write(PPU_REG_OAM_ADDR, 0x10);
+        ppu.write(PPU_REG_OAM_DATA, 0xDE);
+        
+        assert_eq!(ppu.oam_addr, 0x11);
+        ppu.write(PPU_REG_OAM_ADDR, 0x10);
+        assert_eq!(ppu.read(PPU_REG_OAM_DATA), 0xDE);
+    }
+
+    /// **Objective**: Verify the PPU VRAM read buffer logic, where reading 
+    /// from $2007 returns the previous buffered value for most memory ranges.
+    #[test]
+    fn test_ppu_vram_read_buffer() {
+        let mut ppu = Ppu::new(vec![0; 0x2000]);
+        ppu.vram[0x0005] = 0x55;
+        ppu.vram[0x0006] = 0x66;
+        
+        ppu.write(PPU_REG_ADDR, 0x20); // Nametable start
+        ppu.write(PPU_REG_ADDR, 0x05);
+        
+        let val1 = ppu.read(PPU_REG_DATA); // This should be buffered (initial 0)
+        let val2 = ppu.read(PPU_REG_DATA); // This should be 0x55
+        
+        assert_eq!(val1, 0);
+        assert_eq!(val2, 0x55);
+    }
+
+    /// **Objective**: Verify PPU step state machine edge cases (VBLANK, Frame End, scrolling).
+    #[test]
+    fn test_ppu_step_edge_cases() {
+        let mut ppu = Ppu::new(vec![0; 0x2000]);
+        
+        // Setup for scanline increment and VBLANK
+        ppu.scanline = 240;
+        ppu.cycles = 340;
+        ppu.ctrl = CtrlFlags::GENERATE_NMI.bits();
+        
+        // Step into VBlank (scanline 241)
+        ppu.step();
+        assert_eq!(ppu.scanline, 241);
+        assert_eq!(ppu.cycles, 0);
+        assert!(ppu.status & StatusFlags::VBLANK_STARTED.bits() != 0);
+        assert!(ppu.nmi_interrupt);
+        
+        // Setup for Pre-render scanline (261)
+        ppu.scanline = 260;
+        ppu.cycles = 340;
+        ppu.step();
+        assert_eq!(ppu.scanline, 261);
+        assert_eq!(ppu.status & StatusFlags::VBLANK_STARTED.bits(), 0); // VBlank cleared
+        
+        // Setup for Frame End (262 -> 0)
+        ppu.scanline = 261;
+        ppu.cycles = 340;
+        ppu.mask = MaskFlags::SHOW_BACKGROUND.bits() | MaskFlags::SHOW_SPRITES.bits();
+        ppu.t = 0x1234;
+        let frame_complete = ppu.step();
+        assert_eq!(ppu.scanline, 0);
+        assert!(frame_complete);
+        assert_eq!(ppu.v, 0x1234); // V reloaded from T at frame end
+        
+        // Loopy scrolling: Coarse Y increment to 29 (nametable switch)
+        ppu.v = 0x73A0; // Fine Y = 7, Coarse Y = 29
+        ppu.scanline = 10;
+        ppu.cycles = 340;
+        ppu.step(); // Should increment and wrap coarse Y to 0, flip NT bit (bit 11: 0x0800)
+        assert_eq!(ppu.v & 0x0800, 0x0800);
+        
+        // Loopy scrolling: Coarse Y increment to 31 (illegal area reset)
+        ppu.v = 0x73E0; // Fine Y = 7, Coarse Y = 31
+        ppu.scanline = 11;
+        ppu.cycles = 340;
+        ppu.step(); // Should wrap coarse Y to 0 without flipping NT bit
+        assert_eq!(ppu.v & 0x03E0, 0);
+    }
+
+    /// **Objective**: Verify sprite rendering edge cases (Vertical Flip, Priority, Sprite 0 Hit).
+    #[test]
+    fn test_ppu_sprite_edge_cases() {
+        let mut ppu = Ppu::new(vec![0; 0x2000]);
+        ppu.chr_rom[0..16].fill(0xFF); // Solid block for tiles
+        
+        // Setup for Sprite 0 Hit: Background opaque, Sprite opaque, overlapping
+        ppu.mask = MaskFlags::SHOW_BACKGROUND.bits() | MaskFlags::SHOW_SPRITES.bits();
+        ppu.palette_table[0] = 0x11; // Ensure background sys color is populated
+        
+        // Sprite 0: Y=10, Tile=0, Attr=0x20 (Priority=0 means behind BG), X=10
+        // Wait, Sprite priority 0x20 means sprite is BEHIND background.
+        ppu.oam_data[0] = 10;
+        ppu.oam_data[1] = 0;
+        ppu.oam_data[2] = 0xA0; // Vertical Flip (0x80) + Priority (0x20)
+        ppu.oam_data[3] = 10;
+        
+        // Set background tile to be opaque at X=10 to trigger Sprite 0 Hit
+        // VRAM NT starts at 0x2000. 11th row, 1st tile.
+        ppu.vram[0x0000] = 0; // BG tile 0
+        
+        // Render scanline 11 (overlaps Sprite 0 which is at Y=10)
+        ppu.render_scanline(11);
+        
+        // Background was opaque (solid 0xFF tile), Sprite was opaque. Sprite 0 hit should trigger.
+        assert!(ppu.status & StatusFlags::SPRITE_ZERO_HIT.bits() != 0);
+    }
+
+    /// **Objective**: Verify remaining PPU edge cases for 100% line coverage.
+    #[test]
+    fn test_ppu_final_edge_cases() {
+        let mut ppu = Ppu::new(vec![0; 0x2000]);
+        
+        // 1. Write to Mask Register (0x2001)
+        ppu.write(PPU_REG_MASK, 0x1E);
+        assert_eq!(ppu.mask, 0x1E);
+        
+        // 2. Enable NMI while already in VBLANK
+        ppu.status |= StatusFlags::VBLANK_STARTED.bits();
+        ppu.nmi_interrupt = false;
+        ppu.write(PPU_REG_CTRL, CtrlFlags::GENERATE_NMI.bits()); // Should trigger NMI immediately
+        assert!(ppu.nmi_interrupt);
+        
+        // 3. Invalid memory/register accesses (should not panic)
+        ppu.write(0x2008, 0xFF); // Invalid register
+        assert_eq!(ppu.read(0x2008), 0);
+        ppu.write(PPU_REG_ADDR, 0x3F);
+        ppu.write(PPU_REG_ADDR, 0xFF);
+        ppu.write(PPU_REG_DATA, 0xFF); // Invalid VRAM address (handled gracefully or mirrored depending on mapping, but 0x3FFF is palette mirror)
+        
+        // 4. step() rendering a scanline (cycle = 255 -> 256)
+        ppu.cycles = 255;
+        ppu.scanline = 10;
+        ppu.step(); // Hits cycle 256, triggers render_scanline
+        assert_eq!(ppu.cycles, 256);
+        
+        // 5. Normal Fine Y increment (Fine Y < 7)
+        ppu.cycles = 340;
+        ppu.scanline = 15;
+        ppu.mask = MaskFlags::RENDER_ENABLED.bits();
+        ppu.v = 0x0000; // Fine Y = 0
+        ppu.step(); // Fine Y should become 1 (add 0x1000)
+        assert_eq!(ppu.v & 0x7000, 0x1000);
+        
+        // 6. Normal Coarse Y increment (Fine Y = 7, Coarse Y < 29)
+        ppu.cycles = 340;
+        ppu.scanline = 16;
+        ppu.v = 0x7000; // Fine Y = 7, Coarse Y = 0
+        ppu.step(); // Fine Y becomes 0, Coarse Y becomes 1 (add 0x0020)
+        assert_eq!(ppu.v & 0x7000, 0);
+        assert_eq!(ppu.v & 0x03E0, 0x0020);
+        
+        // 7. Background color 0 fallback in render_scanline
+        ppu.vram[0x0000] = 0; // Empty tile
+        ppu.palette_table[0] = 0x12; // Sys color
+        ppu.render_scanline(0); // Should use fallback palette_table[0]
+    }
 }
