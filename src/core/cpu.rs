@@ -1223,4 +1223,64 @@ mod tests {
         assert_eq!(cpu.a, 0x42);
         assert_eq!(cpu.sp, 0xFD);
     }
+
+    /// **Objective**: Verify that the JMP (Jump) instruction correctly updates the 
+    /// Program Counter to the target address.
+    #[test]
+    fn test_jmp() {
+        let mut test_bus = TestBus::new();
+        let mut cpu = Cpu::new();
+        // JMP $1234
+        test_bus.bus.ram[0] = 0x4C;
+        test_bus.bus.ram[1] = 0x34;
+        test_bus.bus.ram[2] = 0x12;
+        cpu.pc = 0;
+        
+        cpu.step(&mut test_bus.bus);
+        assert_eq!(cpu.pc, 0x1234);
+    }
+
+    /// **Objective**: Verify that JSR (Jump to Subroutine) and RTS (Return from Subroutine) 
+    /// correctly use the stack to store and retrieve the return address.
+    #[test]
+    fn test_jsr_rts() {
+        let mut test_bus = TestBus::new();
+        let mut cpu = Cpu::new();
+        // JSR $0005
+        test_bus.bus.ram[0] = 0x20;
+        test_bus.bus.ram[1] = 0x05;
+        test_bus.bus.ram[2] = 0x00;
+        // RTS at $0005
+        test_bus.bus.ram[5] = 0x60;
+        cpu.pc = 0;
+        
+        cpu.step(&mut test_bus.bus); // JSR
+        assert_eq!(cpu.pc, 0x0005);
+        assert_eq!(cpu.sp, 0xFB); // Pushed 2 bytes of PC
+        
+        cpu.step(&mut test_bus.bus); // RTS
+        assert_eq!(cpu.pc, 0x0003); // Returns to instruction after JSR
+    }
+
+    /// **Objective**: Verify that the BIT instruction correctly updates the 
+    /// Zero, Negative, and Overflow flags based on memory content.
+    #[test]
+    fn test_bit() {
+        let mut test_bus = TestBus::new();
+        let mut cpu = Cpu::new();
+        cpu.a = 0xFF;
+        // BIT $0100
+        test_bus.bus.ram[0] = 0x2C;
+        test_bus.bus.ram[1] = 0x00;
+        test_bus.bus.ram[2] = 0x01;
+        
+        // Memory at $0100 has bit 7 and 6 set
+        test_bus.bus.ram[0x0100] = 0b1100_0000;
+        cpu.pc = 0;
+        
+        cpu.step(&mut test_bus.bus);
+        assert!(cpu.status.contains(CpuFlags::NEGATIVE)); // Bit 7
+        assert!(cpu.status.contains(CpuFlags::OVERFLOW)); // Bit 6
+        assert!(!cpu.status.contains(CpuFlags::ZERO));    // 0xFF & 0xC0 != 0
+    }
 }

@@ -23,8 +23,8 @@ The AINES emulator core has reached the highest level of software assurance (SWA
 
 ### 2.3 Software Testing (TS-1)
 *   **Requirement**: Verification through unit and functional tests.
-*   **Finding**: 26 comprehensive unit tests cover critical signal paths (NMI, RESET), hardware-synchronized transfers (OAM DMA), CPU state transitions (Stack, Arithmetic, Logical, Branching), Joypad polling, and PPU/Bus memory mirroring. Automated tests verify cycle accuracy and register side-effects.
-*   **Status**: PASS (26/26 Unit Tests Passing)
+*   **Finding**: 32 comprehensive unit tests cover critical signal paths (NMI, RESET), hardware-synchronized transfers (OAM DMA), CPU state transitions (Subroutines, Jumps, Bitwise, Stack), Joypad polling, iNES ROM parsing, and PPU scanline rendering. Automated tests verify cycle accuracy and register side-effects across the core.
+*   **Status**: PASS (32/32 Unit Tests Passing)
 
 ### 2.4 Object Code Integrity (OI-1A)
 *   **Requirement**: Ensuring the binary reflects source intent without "compiler magic" vulnerabilities.

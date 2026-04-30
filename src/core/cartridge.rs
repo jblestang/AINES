@@ -80,3 +80,48 @@ impl Cartridge {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// **Objective**: Verify that the Cartridge correctly parses a standard iNES header, 
+    /// extracts bank counts, and loads the corresponding memory regions.
+    #[test]
+    fn test_cartridge_load_nrom() {
+        let mut data = vec![0; INES_HEADER_SIZE + PRG_BANK_SIZE + CHR_BANK_SIZE];
+        data[0..4].copy_from_slice(INES_MAGIC);
+        data[4] = 1; // 1 PRG bank (16KB)
+        data[5] = 1; // 1 CHR bank (8KB)
+        data[6] = FLAG_VERTICAL_MIRROR; // Mapper 0, Vertical Mirroring
+        
+        // Fill some data
+        data[INES_HEADER_SIZE] = 0xDE; // Start of PRG
+        data[INES_HEADER_SIZE + PRG_BANK_SIZE] = 0xAD; // Start of CHR
+        
+        let cart = Cartridge::load_rom(&data).unwrap();
+        
+        assert_eq!(cart.prg_rom.len(), PRG_BANK_SIZE);
+        assert_eq!(cart.chr_rom.len(), CHR_BANK_SIZE);
+        assert_eq!(cart.prg_rom[0], 0xDE);
+        assert_eq!(cart.chr_rom[0], 0xAD);
+        assert!(cart.vertical_mirroring);
+        assert_eq!(cart.mapper, 0);
+    }
+
+    /// **Objective**: Verify that the Cartridge correctly handles the "Trainer" block 
+    /// by skipping the 512-byte compatibility region.
+    #[test]
+    fn test_cartridge_with_trainer() {
+        let mut data = vec![0; INES_HEADER_SIZE + TRAINER_SIZE + PRG_BANK_SIZE];
+        data[0..4].copy_from_slice(INES_MAGIC);
+        data[4] = 1; // 1 PRG bank
+        data[6] = FLAG_TRAINER_PRESENT;
+        
+        // Data after trainer
+        data[INES_HEADER_SIZE + TRAINER_SIZE] = 0xBE;
+        
+        let cart = Cartridge::load_rom(&data).unwrap();
+        assert_eq!(cart.prg_rom[0], 0xBE);
+    }
+}

@@ -463,7 +463,7 @@ impl Ppu {
     }
 
     /// Renders a single scanline into the frame buffer.
-    fn render_scanline(&mut self, y: u16) {
+    pub(crate) fn render_scanline(&mut self, y: u16) {
         if y >= SCREEN_HEIGHT as u16 { return; }
 
         let bg_bank = if self.ctrl & CtrlFlags::BACKGRND_PATTERN_ADDR.bits() != 0 { PATTERN_TABLE_1 } else { PATTERN_TABLE_0 };
@@ -697,5 +697,33 @@ mod tests {
         // We can't easily trigger the full render loop in a unit test 
         // without complex mocking, but we can verify the logic in render_sprites
         // if we mock the bg_opaque buffer.
+    }
+
+    /// **Objective**: Verify that the PPU correctly fetches tile data from VRAM 
+    /// and renders background pixels into the frame buffer for a single scanline.
+    #[test]
+    fn test_render_scanline_background() {
+        let mut ppu = Ppu::new(vec![0; 0x2000]);
+        ppu.mask |= MaskFlags::SHOW_BACKGROUND.bits();
+        
+        // Setup a simple tile in CHR-ROM (0,0)
+        // 8x8 pixels of color 1
+        for i in 0..8 {
+            ppu.chr_rom[i] = 0xFF; // Low bitplane
+            ppu.chr_rom[i + 8] = 0x00; // High bitplane
+        }
+        
+        // Setup Nametable 0 (0x2000) with tile 0
+        ppu.vram[0] = 0;
+        
+        // Setup Palette 0 (0x3F01) with a test color
+        ppu.palette_table[1] = 0x00; // System palette index 0 (84, 84, 84)
+        
+        ppu.render_scanline(0);
+        
+        // Check first pixel of frame buffer
+        assert_eq!(ppu.frame_buffer[0], 84);
+        assert_eq!(ppu.frame_buffer[1], 84);
+        assert_eq!(ppu.frame_buffer[2], 84);
     }
 }
