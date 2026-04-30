@@ -19,18 +19,8 @@ pub const ADDR_JOYPAD1: u16 = 0x4016;
 /// Memory-mapped address for Joypad 2 and APU frame counter
 pub const ADDR_JOYPAD2: u16 = 0x4017;
 
-/// Size of a single PRG-ROM bank (16KB)
-pub const PRG_ROM_BANK_SIZE: u16 = 16384;
-
-/// Start of the PRG-ROM address space
 pub const PRG_ROM_START: u16 = 0x8000;
-/// End of the PRG-ROM address space
 pub const PRG_ROM_END: u16 = 0xFFFF;
-
-/// Address mask for 16KB PRG-ROM mirroring
-pub const PRG_ROM_MASK_16K: u16 = 0x3FFF;
-/// Address mask for 32KB PRG-ROM mapping
-pub const PRG_ROM_MASK_32K: u16 = 0x7FFF;
 
 /// Size of the OAM data buffer (256 bytes)
 pub const OAM_DATA_SIZE: usize = 256;
@@ -63,8 +53,10 @@ pub struct Bus {
 
 impl Bus {
     pub fn new(cartridge: Cartridge) -> Self {
-        let mut ppu = Ppu::new(cartridge.chr_rom.clone());
-        ppu.vertical_mirroring = cartridge.vertical_mirroring;
+        // Create Ppu with a reference/copy of CHR data if needed, 
+        // but Ppu should ideally use the mapper too.
+        // For now, we'll give it dummy data and update Ppu next.
+        let ppu = Ppu::new(vec![0; 8192]); 
         Bus {
             ram: [0; RAM_SIZE],
             ppu,
@@ -76,29 +68,15 @@ impl Bus {
     }
 
     /// Reads a byte from the unified 16-bit address space.
-    /// 
-    /// # Memory Mapping Algorithm
-    /// - **0x0000 - 0x1FFF**: CPU RAM (2KB). Mirrored every 2KB.
-    /// - **0x2000 - 0x3FFF**: PPU Registers. Mirrored every 8 bytes.
-    /// - **0x4000 - 0x4017**: APU and I/O Registers.
-    /// - **0x8000 - 0xFFFF**: PRG-ROM (Cartridge). 
-    ///   - If 16KB: Mirrored to fill the 32KB space.
-    ///   - If 32KB: Mapped linearly.
     pub fn read(&mut self, addr: u16) -> u8 {
         match addr {
             RAM_RANGE_START..=RAM_RANGE_END => self.ram[(addr & RAM_MIRROR_MASK) as usize],
-            PPU_REG_RANGE_START..=PPU_REG_RANGE_END => self.ppu.read(addr & PPU_REG_MIRROR_MASK),
+            PPU_REG_RANGE_START..=PPU_REG_RANGE_END => self.ppu.read(addr & PPU_REG_MIRROR_MASK, &*self.cartridge.mapper),
             ADDR_APU_STATUS => self.apu.read(addr),
             ADDR_JOYPAD1 => self.joypad1.read(),
             ADDR_JOYPAD2 => 0, // Joypad 2 not implemented
             PRG_ROM_START..=PRG_ROM_END => {
-                let prg_len = self.cartridge.prg_rom.len() as u16;
-                let mapped_addr = if prg_len == PRG_ROM_BANK_SIZE {
-                    addr & PRG_ROM_MASK_16K
-                } else {
-                    addr & PRG_ROM_MASK_32K
-                };
-                self.cartridge.prg_rom.get(mapped_addr as usize).copied().unwrap_or(0)
+                self.cartridge.mapper.prg_read(addr)
             }
             _ => 0,
         }
@@ -110,7 +88,7 @@ impl Bus {
                 self.ram[(addr & RAM_MIRROR_MASK) as usize] = data;
             }
             PPU_REG_RANGE_START..=PPU_REG_RANGE_END => {
-                self.ppu.write(addr & PPU_REG_MIRROR_MASK, data);
+                self.ppu.write(addr & PPU_REG_MIRROR_MASK, data, &mut *self.cartridge.mapper);
             }
             APU_REG_RANGE_START..=APU_REG_RANGE_END | ADDR_APU_STATUS | ADDR_JOYPAD2 => {
                 self.apu.write(addr, data);
@@ -127,7 +105,9 @@ impl Bus {
             ADDR_JOYPAD1 => {
                 self.joypad1.write(data);
             }
-            PRG_ROM_START..=PRG_ROM_END => {}
+            PRG_ROM_START..=PRG_ROM_END => {
+                self.cartridge.mapper.prg_write(addr, data);
+            }
             _ => {}
         }
     }
@@ -136,34 +116,30 @@ impl Bus {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use super::super::cartridge::Cartridge;
+    use crate::core::cartridge::{Cartridge, INES_HEADER_SIZE, PRG_BANK_SIZE, CHR_BANK_SIZE, INES_MAGIC, FLAG_VERTICAL_MIRROR};
 
-    /// **Objective**: Verify that 16KB PRG-ROM is correctly mirrored into both 
-    /// $8000 and $C000 regions (standard Mapper 0 / NROM behavior).
+    fn create_mock_cartridge(prg_val: u8) -> Cartridge {
+        let mut data = vec![0; INES_HEADER_SIZE + PRG_BANK_SIZE + CHR_BANK_SIZE];
+        data[0..4].copy_from_slice(INES_MAGIC);
+        data[4] = 1; 
+        data[5] = 1;
+        data[6] = FLAG_VERTICAL_MIRROR;
+        for i in 0..PRG_BANK_SIZE { data[INES_HEADER_SIZE + i] = prg_val; }
+        Cartridge::load_rom(&data).unwrap()
+    }
+
     #[test]
     fn test_bus_prg_mirroring_16k() {
-        let cartridge = Cartridge {
-            prg_rom: vec![0xAA; 16384],
-            chr_rom: vec![0; 8192],
-            mapper: 0,
-            vertical_mirroring: true,
-        };
+        let cartridge = create_mock_cartridge(0xAA);
         let mut bus = Bus::new(cartridge);
         
         assert_eq!(bus.read(0x8000), 0xAA);
         assert_eq!(bus.read(0xC000), 0xAA);
     }
 
-    /// **Objective**: Verify that CPU RAM ($0000-$07FF) is mirrored 
-    /// every 2KB up to $1FFF.
     #[test]
     fn test_bus_ram_mirroring() {
-        let cartridge = Cartridge {
-            prg_rom: vec![0; 16384],
-            chr_rom: vec![0; 8192],
-            mapper: 0,
-            vertical_mirroring: true,
-        };
+        let cartridge = create_mock_cartridge(0);
         let mut bus = Bus::new(cartridge);
         
         bus.write(0x0005, 0x55);
@@ -172,16 +148,9 @@ mod tests {
         assert_eq!(bus.read(0x1805), 0x55);
     }
 
-    /// **Objective**: Verify that PPU registers ($2000-$2007) are mirrored 
-    /// every 8 bytes up to $3FFF.
     #[test]
     fn test_bus_ppu_mirroring() {
-        let cartridge = Cartridge {
-            prg_rom: vec![0; 16384],
-            chr_rom: vec![0; 8192],
-            mapper: 0,
-            vertical_mirroring: true,
-        };
+        let cartridge = create_mock_cartridge(0);
         let mut bus = Bus::new(cartridge);
         
         bus.write(0x2000, 0b1000_0000); // PPUCTRL
@@ -191,58 +160,38 @@ mod tests {
         assert_eq!(bus.ppu.ctrl, 0b0000_0000);
     }
 
-    /// **Objective**: Verify that writing to $4014 (OAM DMA) correctly 
-    /// copies 256 bytes from CPU RAM to PPU OAM.
     #[test]
     fn test_bus_oam_dma() {
-        let cartridge = Cartridge {
-            prg_rom: vec![0; 16384],
-            chr_rom: vec![0; 8192],
-            mapper: 0,
-            vertical_mirroring: true,
-        };
+        let cartridge = create_mock_cartridge(0);
         let mut bus = Bus::new(cartridge);
         
-        // Fill RAM at $0200
         for i in 0..256 {
             bus.write(0x0200 + i as u16, i as u8);
         }
         
-        // Trigger DMA
         bus.write(0x4014, 0x02);
         
         for i in 0..256 {
             assert_eq!(bus.ppu.oam_data[i], i as u8);
         }
-        assert!(bus.dma_cycles > 500); // 513 or 514 cycles
+        assert!(bus.dma_cycles > 500); 
     }
 
-    /// **Objective**: Verify that routing falls back correctly for unmapped memory
-    /// and correctly dispatches to APU/Joypad.
     #[test]
     fn test_bus_routing_edge_cases() {
-        let cartridge = Cartridge {
-            prg_rom: vec![0; 16384],
-            chr_rom: vec![0; 8192],
-            mapper: 0,
-            vertical_mirroring: true,
-        };
+        let cartridge = create_mock_cartridge(0);
         let mut bus = Bus::new(cartridge);
         
-        // APU read/write
-        bus.write(0x4000, 0x55); // Pulse 1
-        assert_eq!(bus.read(0x4015), 0); // APU status
+        bus.write(0x4000, 0x55); 
+        assert_eq!(bus.read(0x4015), 0); 
         
-        // Joypad read/write
-        bus.write(0x4016, 1); // Strobe Joypad 1
+        bus.write(0x4016, 1); 
         bus.write(0x4016, 0);
-        assert_eq!(bus.read(0x4016), 0); // Read Joypad 1
-        assert_eq!(bus.read(0x4017), 0); // Read Joypad 2 (Unimplemented)
+        assert_eq!(bus.read(0x4016), 0); 
+        assert_eq!(bus.read(0x4017), 0); 
         
-        // ROM write (should do nothing / be ignored)
         bus.write(0x8000, 0xFF);
         
-        // Invalid/Unmapped memory read/write
         bus.write(0x5000, 0xFF);
         assert_eq!(bus.read(0x5000), 0);
     }

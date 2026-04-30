@@ -12,7 +12,6 @@
 ///  - Cycle-accurate timing counts
 ///
 /// Reference: https://www.qmtpro.com/~nes/misc/nestest.txt
-
 // Pull in the core modules via the library path trick.
 // We re-expose core as a module inside the integration test via a path directive.
 use std::fs;

@@ -1044,23 +1044,26 @@ impl Cpu {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::cartridge::Cartridge;
+    use crate::core::cartridge::{Cartridge, INES_HEADER_SIZE, PRG_BANK_SIZE, CHR_BANK_SIZE, INES_MAGIC, FLAG_VERTICAL_MIRROR};
     use crate::core::bus::Bus;
 
     struct TestBus {
         bus: Bus,
     }
 
+    fn create_mock_cartridge() -> Cartridge {
+        let mut data = vec![0; INES_HEADER_SIZE + PRG_BANK_SIZE * 2 + CHR_BANK_SIZE];
+        data[0..4].copy_from_slice(INES_MAGIC);
+        data[4] = 2; // 32KB PRG
+        data[5] = 1; // 8KB CHR
+        data[6] = FLAG_VERTICAL_MIRROR;
+        Cartridge::load_rom(&data).unwrap()
+    }
+
     impl TestBus {
         fn new() -> Self {
-            let cartridge = Cartridge {
-                prg_rom: vec![0; 0x8000],
-                chr_rom: vec![0; 0x2000],
-                mapper: 0,
-                vertical_mirroring: true,
-            };
             TestBus {
-                bus: Bus::new(cartridge),
+                bus: Bus::new(create_mock_cartridge()),
             }
         }
     }
@@ -1252,8 +1255,8 @@ mod tests {
         cpu.status = CpuFlags::from_bits_truncate(0x24);
         
         // Set NMI vector in Cartridge ROM (0xFFFA -> 0x7FFA)
-        test_bus.bus.cartridge.prg_rom[0x7FFA] = 0xAD;
-        test_bus.bus.cartridge.prg_rom[0x7FFB] = 0xDE;
+        test_bus.bus.cartridge.mapper.prg_write_debug(0xFFFA, 0xAD);
+        test_bus.bus.cartridge.mapper.prg_write_debug(0xFFFB, 0xDE);
         
         cpu.nmi(&mut test_bus.bus);
         
@@ -1293,8 +1296,8 @@ mod tests {
         cpu.a = 0xFF;
         
         // Set Reset vector (0xFFFC -> 0x7FFC)
-        test_bus.bus.cartridge.prg_rom[0x7FFC] = 0xEF;
-        test_bus.bus.cartridge.prg_rom[0x7FFD] = 0xBE;
+        test_bus.bus.cartridge.mapper.prg_write_debug(0xFFFC, 0xEF);
+        test_bus.bus.cartridge.mapper.prg_write_debug(0xFFFD, 0xBE);
         
         cpu.reset(&mut test_bus.bus);
         
@@ -1721,18 +1724,10 @@ mod tests {
     /// PC and Status to the stack and jumps to the IRQ vector.
     #[test]
     fn test_interrupts() {
-        let mut prg_rom = vec![0; 32768];
-        // IRQ vector at $FFFE-$FFFF (physical offset $7FFE-$7FFF for 32KB ROM)
-        prg_rom[0x7FFE] = 0x00;
-        prg_rom[0x7FFF] = 0x03;
-        
-        let cartridge = Cartridge {
-            prg_rom,
-            chr_rom: vec![0; 8192],
-            mapper: 0,
-            vertical_mirroring: true,
-        };
+        let cartridge = create_mock_cartridge();
         let mut bus = Bus::new(cartridge);
+        bus.cartridge.mapper.prg_write_debug(0xFFFE, 0x00);
+        bus.cartridge.mapper.prg_write_debug(0xFFFF, 0x03);
         let mut cpu = Cpu::new();
         
         // BRK instruction in RAM at $0050

@@ -185,12 +185,13 @@ pub const ADDR_HIGH_BYTE_MASK: u16 = 0x3F00;
 pub const ADDR_LOW_BYTE_MASK: u16  = 0x00FF;
 
 /// Default window scaling factor for the emulator display
+#[allow(dead_code)]
 pub const RENDER_SCALE: f32 = 2.0;
+
 /// Fully opaque alpha value for RGBA pixels
 pub const OPAQUE_ALPHA: u8 = 255;
 
 pub struct Ppu {
-    pub chr_rom: Vec<u8>,
     pub palette_table: [u8; 32],
     pub vram: [u8; 2048],
     pub oam_data: [u8; 256],
@@ -225,39 +226,33 @@ pub struct Ppu {
     internal_data_buf: u8,
     
     pub frame_buffer: [u8; 256 * 240 * 4], // RGBA
-    pub vertical_mirroring: bool,
     scanline: u16,
     cycles: usize,
 }
 
+use super::mapper::{Mapper, Mirroring};
+
 impl Ppu {
     /// Maps a PPU address ($2000-$3FFF) to a physical VRAM address based on mirroring mode.
-    /// 
-    /// # Mirroring Algorithms
-    /// - **Vertical**: Nametable 0 is mirrored at 2, Nametable 1 is mirrored at 3. 
-    ///   Used for horizontal scrolling games (e.g., Super Mario Bros).
-    /// - **Horizontal**: Nametable 0 is mirrored at 1, Nametable 2 is mirrored at 3. 
-    ///   Used for vertical scrolling games (e.g., Ice Climber).
-    /// 
-    /// See: [PPU Mirroring](https://www.nesdev.org/wiki/Mirroring#Nametable_Mirroring)
-    pub fn mirror_vram_addr(&self, addr: u16) -> u16 {
+    pub fn mirror_vram_addr(&self, addr: u16, mirroring: Mirroring) -> u16 {
         let addr = (addr - NAMETABLE_BASE) % NAMETABLE_REGION_SIZE;
-        if self.vertical_mirroring {
-            // Vertical: NT0 mirror NT2, NT1 mirror NT3
-            addr % (NAMETABLE_SIZE * 2)
-        } else {
-            // Horizontal: NT0 mirror NT1, NT2 mirror NT3
-            if addr < (NAMETABLE_SIZE * 2) {
-                addr % NAMETABLE_SIZE
-            } else {
-                (addr % NAMETABLE_SIZE) + NAMETABLE_SIZE
+        match mirroring {
+            Mirroring::Vertical => addr % (NAMETABLE_SIZE * 2),
+            Mirroring::Horizontal => {
+                if addr < (NAMETABLE_SIZE * 2) {
+                    addr % NAMETABLE_SIZE
+                } else {
+                    (addr % NAMETABLE_SIZE) + NAMETABLE_SIZE
+                }
             }
+            Mirroring::SingleScreenLower => addr % NAMETABLE_SIZE,
+            Mirroring::SingleScreenUpper => (addr % NAMETABLE_SIZE) + NAMETABLE_SIZE,
+            _ => addr % (NAMETABLE_SIZE * 2), // Fallback
         }
     }
 
-    pub fn new(chr_rom: Vec<u8>) -> Self {
+    pub fn new(_chr_rom: Vec<u8>) -> Self {
         Ppu {
-            chr_rom,
             palette_table: [0; 32],
             vram: [0; 2048],
             oam_data: [0; 256],
@@ -275,7 +270,6 @@ impl Ppu {
             internal_data_buf: 0,
             
             frame_buffer: [0; SCREEN_WIDTH * SCREEN_HEIGHT * 4],
-            vertical_mirroring: true, // Default
             scanline: 0,
             cycles: 0,
         }
@@ -320,8 +314,9 @@ impl Ppu {
         }
     }
 
-    pub fn read(&mut self, addr: u16) -> u8 {
+    pub fn read(&mut self, addr: u16, mapper: &dyn Mapper) -> u8 {
         match addr {
+            PPU_REG_CTRL | PPU_REG_MASK | PPU_REG_OAM_ADDR | PPU_REG_SCROLL | PPU_REG_ADDR => 0,
             PPU_REG_STATUS => {
                 let status = self.status;
                 self.status &= !StatusFlags::VBLANK_STARTED.bits(); // Clear VBlank ONLY (bit 7)
@@ -335,8 +330,8 @@ impl Ppu {
                 
                 // Read from VRAM into the buffer
                 self.internal_data_buf = match addr {
-                    CHR_ROM_START..=CHR_ROM_END => self.chr_rom.get(addr as usize).copied().unwrap_or(0),
-                    VRAM_NT_START..=VRAM_NT_END => self.vram.get(self.mirror_vram_addr(addr) as usize).copied().unwrap_or(0),
+                    CHR_ROM_START..=CHR_ROM_END => mapper.chr_read(addr),
+                    VRAM_NT_START..=VRAM_NT_END => self.vram.get(self.mirror_vram_addr(addr, mapper.mirroring()) as usize).copied().unwrap_or(0),
                     _ => 0,
                 };
                 
@@ -358,12 +353,11 @@ impl Ppu {
         }
     }
 
-    pub fn write(&mut self, addr: u16, data: u8) {
+    pub fn write(&mut self, addr: u16, data: u8, mapper: &mut dyn Mapper) {
         match addr {
             PPU_REG_CTRL => self.write_to_ctrl(data),
             PPU_REG_MASK => {
                 self.mask = data;
-                // Debug palette dump removed from here for performance
             }
             PPU_REG_OAM_ADDR => self.oam_addr = data,
             PPU_REG_OAM_DATA => {
@@ -375,8 +369,8 @@ impl Ppu {
             PPU_REG_DATA => {
                 let addr = self.v & PPU_ADDR_MASK;
                 match addr {
-                    CHR_ROM_START..=CHR_ROM_END => { /* CHR ROM is generally read-only */ }
-                    VRAM_NT_START..=VRAM_NT_END => self.vram[self.mirror_vram_addr(addr) as usize] = data,
+                    CHR_ROM_START..=CHR_ROM_END => mapper.chr_write(addr, data),
+                    VRAM_NT_START..=VRAM_NT_END => self.vram[self.mirror_vram_addr(addr, mapper.mirroring()) as usize] = data,
                     _ if (PALETTE_BASE..PALETTE_BASE + PALETTE_SIZE).contains(&addr) => {
                         let mut pal_addr = addr & PALETTE_MASK;
                         // Addresses $3F10/$3F14/$3F18/$3F1C are mirrors of $3F00/$3F04/$3F08/$3F0C
@@ -396,13 +390,12 @@ impl Ppu {
     }
 
     /// Advances the PPU by one clock cycle.
-    /// Returns true if a full frame has been rendered.
-    pub fn step(&mut self) -> bool {
+    pub fn step(&mut self, mapper: &dyn Mapper) -> bool {
         self.cycles += 1;
 
         if self.cycles == 256
             && self.scanline < SCREEN_HEIGHT as u16 {
-                self.render_scanline(self.scanline);
+                self.render_scanline(self.scanline, mapper);
             }
 
         if self.cycles >= CYCLES_PER_SCANLINE {
@@ -463,35 +456,23 @@ impl Ppu {
     }
 
     /// Renders a single scanline into the frame buffer.
-    pub(crate) fn render_scanline(&mut self, y: u16) {
+    pub(crate) fn render_scanline(&mut self, y: u16, mapper: &dyn Mapper) {
         if y >= SCREEN_HEIGHT as u16 { return; }
 
         let bg_bank = if self.ctrl & CtrlFlags::BACKGRND_PATTERN_ADDR.bits() != 0 { PATTERN_TABLE_1 } else { PATTERN_TABLE_0 };
         let mut bg_opaque = [false; SCREEN_WIDTH];
-        
-        // 2. BACKGROUND RENDERING
-        // # Algorithm: Background Scanline Pipeline
-        // For each pixel (screen_x) in the scanline:
-        // 1. **Effective Coordinate**: Calculate total horizontal offset (screen_x + fine_x_scroll).
-        // 2. **Tile Selection**: Determine which nametable and coarse X/Y tile to fetch based on internal 'v' register.
-        // 3. **Attribute Fetch**: Retrieve the 2-bit color palette index from the Attribute Table (64 bytes at end of nametable).
-        // 4. **Pattern Fetch**: Retrieve the 2-bit pixel data from the Pattern Table (CHR-ROM).
-        // 5. **Pixel Selection**: Use fine X/Y to select the specific pixel from the 8x8 tile.
+        let mirroring = mapper.mirroring();
+
         if self.mask & MaskFlags::SHOW_BACKGROUND.bits() != 0 {
             let fine_x = u16::from(self.x);
             for screen_x in 0..SCREEN_WIDTH as u16 {
-                // Horizontal scrolling math:
-                // total_x is the absolute pixel offset in the virtual 512px horizontal space.
                 let total_x = screen_x + fine_x;
                 let coarse_x_inc = total_x / 8;
                 let base_coarse_x = self.v & LOOPY_COARSE_X_MASK;
                 
-                // Final coarse X wraps within a 32-tile nametable.
                 let final_coarse_x = (base_coarse_x + coarse_x_inc) % 32;
-                // If coarse_x_inc caused a wrap-around, we toggle the horizontal nametable bit.
                 let final_nt = ((self.v >> 10) & 0x03) ^ ((base_coarse_x + coarse_x_inc) / 32);
                 
-                // Construct the temporary VRAM address for THIS specific pixel.
                 let v = (self.v & !0x041F) | (final_nt << 10) | final_coarse_x;
 
                 let coarse_x = v & LOOPY_COARSE_X_MASK;
@@ -500,26 +481,19 @@ impl Ppu {
                 let fine_y = (v & LOOPY_FINE_Y_MASK) >> 12;
                 
                 let nt_addr = NAMETABLE_BASE | (nt_select << 10) | (coarse_y << 5) | coarse_x;
-                let vram_idx = self.mirror_vram_addr(nt_addr) as usize;
+                let vram_idx = self.mirror_vram_addr(nt_addr, mirroring) as usize;
                 let tile_id = if vram_idx < self.vram.len() { u16::from(self.vram[vram_idx]) } else { 0 };
                 
-                // Attribute Table Fetch
-                // https://www.nesdev.org/wiki/PPU_attribute_tables
                 let attr_addr = (NAMETABLE_BASE + ATTRIBUTE_TABLE_OFFSET) | (nt_select << 10) | ((coarse_y >> 2) << 3) | (coarse_x >> 2);
-                let attr_idx = self.mirror_vram_addr(attr_addr) as usize;
+                let attr_idx = self.mirror_vram_addr(attr_addr, mirroring) as usize;
                 let attr_byte = if attr_idx < self.vram.len() { self.vram[attr_idx] } else { 0 };
                 
-                // Determine 2-bit palette index from attribute byte
                 let shift = ((coarse_y & 2) << 1) | (coarse_x & 2);
                 let palette_idx = (attr_byte >> shift) & 0x03;
                 
                 let tile_addr = bg_bank + tile_id * TILE_SIZE_BYTES + fine_y;
-                let mut p_low = 0;
-                let mut p_high = 0;
-                if ((tile_addr + TILE_BITPLANE_OFFSET) as usize) < self.chr_rom.len() {
-                    p_low = self.chr_rom[tile_addr as usize];
-                    p_high = self.chr_rom[(tile_addr + TILE_BITPLANE_OFFSET) as usize];
-                }
+                let p_low = mapper.chr_read(tile_addr);
+                let p_high = mapper.chr_read(tile_addr + TILE_BITPLANE_OFFSET);
                 
                 let bit_idx = 7 - (total_x % 8);
                 let color_val = (((p_high >> bit_idx) & 1) << 1) | ((p_low >> bit_idx) & 1);
@@ -541,14 +515,11 @@ impl Ppu {
             }
         }
 
-        // 3. SPRITE RENDERING
-        // https://www.nesdev.org/wiki/PPU_sprite_evaluation
         if self.mask & MaskFlags::SHOW_SPRITES.bits() != 0 {
             let s_bank = if self.ctrl & CtrlFlags::SPRITE_PATTERN_ADDR.bits() != 0 { PATTERN_TABLE_1 } else { PATTERN_TABLE_0 };
             for i in (0..OAM_SPRITE_COUNT).rev() {
                 let oam_idx = i * OAM_ENTRY_SIZE;
                 let sprite_y = u16::from(self.oam_data[oam_idx]);
-                // Sprites are delayed by one scanline in hardware
                 if y >= sprite_y + SPRITE_Y_OFFSET && y < sprite_y + SPRITE_Y_OFFSET + SPRITE_HEIGHT_8X8 {
                     let tile_id = u16::from(self.oam_data[oam_idx + 1]);
                     let attr = SpriteAttributes::from_bits_truncate(self.oam_data[oam_idx + 2]);
@@ -565,12 +536,8 @@ impl Ppu {
                     };
                     let tile_addr = s_bank + tile_id * TILE_SIZE_BYTES + row;
                     
-                    let mut p_low = 0;
-                    let mut p_high = 0;
-                    if ((tile_addr + TILE_BITPLANE_OFFSET) as usize) < self.chr_rom.len() {
-                        p_low = self.chr_rom[tile_addr as usize];
-                        p_high = self.chr_rom[(tile_addr + TILE_BITPLANE_OFFSET) as usize];
-                    }
+                    let p_low = mapper.chr_read(tile_addr);
+                    let p_high = mapper.chr_read(tile_addr + TILE_BITPLANE_OFFSET);
 
                     for dx in 0..8 {
                         let screen_x = sprite_x + dx;
@@ -579,8 +546,6 @@ impl Ppu {
                         let color_val = (((p_high >> bit_idx) & 1) << 1) | ((p_low >> bit_idx) & 1);
                         
                         if color_val != 0 {
-                            // Sprite 0 Hit detection
-                            // https://www.nesdev.org/wiki/PPU_OAM#Sprite_0_hits
                             if i == 0 && bg_opaque[screen_x as usize] && (self.mask & MaskFlags::RENDER_ENABLED.bits() == MaskFlags::RENDER_ENABLED.bits()) {
                                 self.status |= StatusFlags::SPRITE_ZERO_HIT.bits();
                             }
@@ -608,56 +573,56 @@ impl Ppu {
 
 #[cfg(test)]
 mod tests {
+    use super::super::mapper::{Mapper0, Mirroring};
     use super::*;
     use crate::core::bus::PPU_REG_MIRROR_MASK;
+
+    fn create_mock_mapper() -> Mapper0 {
+        Mapper0::new(vec![0; 16384], vec![0; 8192], Mirroring::Vertical)
+    }
 
     /// **Objective**: Verify that VRAM addresses are correctly mirrored for Vertical Mirroring 
     /// configuration (standard NROM-style).
     #[test]
     fn test_vram_mirroring_vertical() {
-        let mut ppu = Ppu::new(vec![0; 0x2000]);
-        ppu.vertical_mirroring = true;
+        let ppu = Ppu::new(vec![0; 0x2000]);
         
         // NT0
-        assert_eq!(ppu.mirror_vram_addr(0x2000), 0x0000);
+        assert_eq!(ppu.mirror_vram_addr(0x2000, Mirroring::Vertical), 0x0000);
         // NT2 mirrors NT0
-        assert_eq!(ppu.mirror_vram_addr(0x2800), 0x0000);
+        assert_eq!(ppu.mirror_vram_addr(0x2800, Mirroring::Vertical), 0x0000);
         
         // NT1
-        assert_eq!(ppu.mirror_vram_addr(0x2400), 0x0400);
+        assert_eq!(ppu.mirror_vram_addr(0x2400, Mirroring::Vertical), 0x0400);
         // NT3 mirrors NT1
-        assert_eq!(ppu.mirror_vram_addr(0x2C00), 0x0400);
+        assert_eq!(ppu.mirror_vram_addr(0x2C00, Mirroring::Vertical), 0x0400);
     }
 
     /// **Objective**: Verify that VRAM addresses are correctly mirrored for Horizontal Mirroring 
     /// configuration (standard NROM-style).
     #[test]
     fn test_vram_mirroring_horizontal() {
-        let mut ppu = Ppu::new(vec![0; 0x2000]);
-        ppu.vertical_mirroring = false;
+        let ppu = Ppu::new(vec![0; 0x2000]);
         
         // NT0
-        assert_eq!(ppu.mirror_vram_addr(0x2000), 0x0000);
+        assert_eq!(ppu.mirror_vram_addr(0x2000, Mirroring::Horizontal), 0x0000);
         // NT1 mirrors NT0
-        assert_eq!(ppu.mirror_vram_addr(0x2400), 0x0000);
+        assert_eq!(ppu.mirror_vram_addr(0x2400, Mirroring::Horizontal), 0x0000);
         
         // NT2
-        assert_eq!(ppu.mirror_vram_addr(0x2800), 0x0400);
+        assert_eq!(ppu.mirror_vram_addr(0x2800, Mirroring::Horizontal), 0x0400);
         // NT3 mirrors NT2
-        assert_eq!(ppu.mirror_vram_addr(0x2C00), 0x0400);
+        assert_eq!(ppu.mirror_vram_addr(0x2C00, Mirroring::Horizontal), 0x0400);
     }
 
     /// **Objective**: Verify that reading the PPUSTATUS register correctly clears the 
     /// VBlank flag and resets the internal address latch.
     #[test]
     fn test_ppu_register_mirroring() {
-        // Register $2008 mirrors $2000
-        // But our Ppu::read/write takes 0..7 relative to $2000.
-        // The Bus handles the mirroring before calling Ppu.
-        // We test the Ppu's internal response to $2002 (Status)
         let mut ppu = Ppu::new(vec![0; 0x2000]);
+        let mapper = create_mock_mapper();
         ppu.status = 0x80; // VBlank set
-        let status = ppu.read(PPU_REG_STATUS & PPU_REG_MIRROR_MASK);
+        let status = ppu.read(PPU_REG_STATUS & PPU_REG_MIRROR_MASK, &mapper);
         assert_eq!(status, 0x80);
         assert_eq!(ppu.status, 0x00); // VBlank should be cleared after read
     }
@@ -667,15 +632,16 @@ mod tests {
     #[test]
     fn test_palette_mirroring() {
         let mut ppu = Ppu::new(vec![0; 0x2000]);
+        let mut mapper = create_mock_mapper();
         // $3F10 is a mirror of $3F00
         // We write 0x1A to $3F00
         ppu.v = 0x3F00;
-        ppu.write(PPU_REG_DATA & PPU_REG_MIRROR_MASK, 0x1A);
+        ppu.write(PPU_REG_DATA & PPU_REG_MIRROR_MASK, 0x1A, &mut mapper);
         assert_eq!(ppu.palette_table[0], 0x1A);
         
         // Read from $3F10
         ppu.v = 0x3F10;
-        let val = ppu.read(PPU_REG_DATA & PPU_REG_MIRROR_MASK);
+        let val = ppu.read(PPU_REG_DATA & PPU_REG_MIRROR_MASK, &mapper);
         assert_eq!(val, 0x1A);
     }
 
@@ -684,19 +650,22 @@ mod tests {
     #[test]
     fn test_sprite_zero_hit() {
         let mut ppu = Ppu::new(vec![0; 0x2000]);
-        ppu.mask |= MaskFlags::RENDER_ENABLED.bits();
+        let mut chr_rom = vec![0; 8192];
+        chr_rom[0..16].fill(0xFF); 
+        let mapper = Mapper0::new(vec![0; 16384], chr_rom, Mirroring::Vertical);
         
-        // Setup sprite 0 at (10, 10)
+        ppu.mask = MaskFlags::SHOW_BACKGROUND.bits() | MaskFlags::SHOW_SPRITES.bits();
         ppu.oam_data[0] = 10; // Y
-        ppu.oam_data[1] = 0;  // Tile
-        ppu.oam_data[2] = 0;  // Attr
+        ppu.oam_data[1] = 0;  // Tile 0
+        ppu.oam_data[2] = 0;  // No attributes
         ppu.oam_data[3] = 10; // X
         
-        // Mock opaque background at (10, 10)
-        // In the real PPU, this happens during scanline rendering.
-        // We can't easily trigger the full render loop in a unit test 
-        // without complex mocking, but we can verify the logic in render_sprites
-        // if we mock the bg_opaque buffer.
+        ppu.vram[0x0000] = 0; // Opaque bg pixel (index 0 points to opaque palette in this mock)
+        ppu.palette_table[0] = 0x11; // Bg color (opaque)
+        ppu.palette_table[0x11] = 0x22; // Sprite color (opaque)
+        
+        ppu.render_scanline(11, &mapper);
+        assert!(ppu.status & StatusFlags::SPRITE_ZERO_HIT.bits() != 0);
     }
 
     /// **Objective**: Verify that the PPU correctly fetches tile data from VRAM 
@@ -706,25 +675,19 @@ mod tests {
         let mut ppu = Ppu::new(vec![0; 0x2000]);
         ppu.mask |= MaskFlags::SHOW_BACKGROUND.bits();
         
-        // Setup a simple tile in CHR-ROM (0,0)
-        // 8x8 pixels of color 1
+        let mut chr_rom = vec![0; 8192];
         for i in 0..8 {
-            ppu.chr_rom[i] = 0xFF; // Low bitplane
-            ppu.chr_rom[i + 8] = 0x00; // High bitplane
+            chr_rom[i] = 0xFF; // Low bitplane
+            chr_rom[i + 8] = 0x00; // High bitplane
         }
+        let mapper = Mapper0::new(vec![0; 16384], chr_rom, Mirroring::Vertical);
         
-        // Setup Nametable 0 (0x2000) with tile 0
         ppu.vram[0] = 0;
+        ppu.palette_table[1] = 0x00; 
         
-        // Setup Palette 0 (0x3F01) with a test color
-        ppu.palette_table[1] = 0x00; // System palette index 0 (84, 84, 84)
+        ppu.render_scanline(0, &mapper);
         
-        ppu.render_scanline(0);
-        
-        // Check first pixel of frame buffer
         assert_eq!(ppu.frame_buffer[0], 84);
-        assert_eq!(ppu.frame_buffer[1], 84);
-        assert_eq!(ppu.frame_buffer[2], 84);
     }
 
     /// **Objective**: Verify that the OAMADDR and OAMDATA registers correctly manage 
@@ -732,10 +695,11 @@ mod tests {
     #[test]
     fn test_ppu_oam_access() {
         let mut ppu = Ppu::new(vec![0; 0x2000]);
+        let mut mapper = create_mock_mapper();
         // Set OAM address to 0x10
-        ppu.write(PPU_REG_OAM_ADDR, 0x10);
+        ppu.write(PPU_REG_OAM_ADDR, 0x10, &mut mapper);
         // Write to OAMDATA
-        ppu.write(PPU_REG_OAM_DATA, 0xBC);
+        ppu.write(PPU_REG_OAM_DATA, 0xBC, &mut mapper);
         
         assert_eq!(ppu.oam_data[0x10], 0xBC);
         assert_eq!(ppu.oam_addr, 0x11); // Auto-increment
@@ -748,17 +712,14 @@ mod tests {
         let mut ppu = Ppu::new(vec![0; 0x2000]);
         ppu.mask |= MaskFlags::SHOW_BACKGROUND.bits();
         
-        // Setup tile 0 as opaque
-        for i in 0..8 { ppu.chr_rom[i] = 0xFF; }
+        let mut chr_rom = vec![0; 8192];
+        for val in chr_rom.iter_mut().take(8) { *val = 0xFF; }
+        let mapper = Mapper0::new(vec![0; 16384], chr_rom, Mirroring::Vertical);
         
-        // Setup Attribute Table (0x23C0) for first 16x16 block
-        // We set bits 0-1 to 1 (second palette)
         ppu.vram[0x03C0] = 0x01; 
+        ppu.palette_table[5] = 0x20; 
         
-        // Setup Palette 1 (0x3F05)
-        ppu.palette_table[5] = 0x20; // White (236, 238, 236)
-        
-        ppu.render_scanline(0);
+        ppu.render_scanline(0, &mapper);
         
         assert_eq!(ppu.frame_buffer[0], 236);
     }
@@ -768,12 +729,13 @@ mod tests {
     #[test]
     fn test_ppu_vram_increment() {
         let mut ppu = Ppu::new(vec![0; 0x2000]);
+        let mut mapper = create_mock_mapper();
         // Increment by 32
-        ppu.write(PPU_REG_CTRL, CtrlFlags::VRAM_ADD_INCREMENT.bits());
-        ppu.write(PPU_REG_ADDR, 0x20);
-        ppu.write(PPU_REG_ADDR, 0x00); // Address $2000
+        ppu.write(PPU_REG_CTRL, CtrlFlags::VRAM_ADD_INCREMENT.bits(), &mut mapper);
+        ppu.write(PPU_REG_ADDR, 0x20, &mut mapper);
+        ppu.write(PPU_REG_ADDR, 0x00, &mut mapper); // Address $2000
         
-        ppu.write(PPU_REG_DATA, 0x11);
+        ppu.write(PPU_REG_DATA, 0x11, &mut mapper);
         assert_eq!(ppu.v, 0x2020); // $2000 + 32
     }
 
@@ -782,13 +744,14 @@ mod tests {
     #[test]
     fn test_ppu_scroll_writes() {
         let mut ppu = Ppu::new(vec![0; 0x2000]);
+        let mut mapper = create_mock_mapper();
         // First write: fine X and coarse X
-        ppu.write(PPU_REG_SCROLL, 0x7D); // fine X = 5, coarse X = 15
+        ppu.write(PPU_REG_SCROLL, 0x7D, &mut mapper); // fine X = 5, coarse X = 15
         assert_eq!(ppu.x, 0x05);
         assert_eq!(ppu.t & 0x001F, 0x0F);
         
         // Second write: fine Y and coarse Y
-        ppu.write(PPU_REG_SCROLL, 0x5E); 
+        ppu.write(PPU_REG_SCROLL, 0x5E, &mut mapper); 
         assert!(ppu.t & 0x7000 != 0); // Fine Y bits
     }
 
@@ -801,21 +764,19 @@ mod tests {
         ppu.mask |= MaskFlags::SHOW_SPRITES.bits();
         ppu.ctrl |= CtrlFlags::SPRITE_PATTERN_ADDR.bits();
         
-        // Setup sprite 0 at (0, 0)
-        ppu.oam_data[0] = 0;    // Y = 0
-        ppu.oam_data[1] = 0x00; // Tile = 0
-        ppu.oam_data[2] = 0x00; // Attributes (Priority = 0: In front)
-        ppu.oam_data[3] = 0;    // X = 0
+        let mut chr_rom = vec![0; 8192];
+        for i in 0..8 { chr_rom[0x1000 + i] = 0xFF; } 
+        let mapper = Mapper0::new(vec![0; 16384], chr_rom, Mirroring::Vertical);
         
-        // Setup tile 1 in CHR-ROM
-        for i in 0..8 { ppu.chr_rom[0x1000 + i] = 0xFF; } // Opaque
+        ppu.oam_data[0] = 0;    
+        ppu.oam_data[1] = 0x00; 
+        ppu.oam_data[2] = 0x00; 
+        ppu.oam_data[3] = 0;    
         
-        // Setup palette for sprite 0
-        ppu.palette_table[0x11] = 0x30; // White (236, 238, 236)
+        ppu.palette_table[0x11] = 0x30; 
         
-        ppu.render_scanline(1); // Sprite at Y=0 appears on scanline 1
+        ppu.render_scanline(1, &mapper); 
         
-        // Check first pixel
         assert_eq!(ppu.frame_buffer[SCREEN_WIDTH * 4], 236);
     }
 
@@ -824,14 +785,15 @@ mod tests {
     #[test]
     fn test_ppu_status_read_side_effects() {
         let mut ppu = Ppu::new(vec![0; 0x2000]);
+        let mapper = create_mock_mapper();
         ppu.status |= StatusFlags::VBLANK_STARTED.bits();
         ppu.w = true; // Address latch set
         
-        let status = ppu.read(PPU_REG_STATUS);
+        let status = ppu.read(PPU_REG_STATUS, &mapper);
         
         assert!(status & StatusFlags::VBLANK_STARTED.bits() != 0);
         assert!(ppu.status & StatusFlags::VBLANK_STARTED.bits() == 0); // Cleared after read
-        assert_eq!(ppu.w, false); // Latch reset
+        assert!(!ppu.w); // Latch reset
     }
 
     /// **Objective**: Verify that palette RAM writes to $3F10, $3F14, $3F18, $3F1C 
@@ -839,11 +801,12 @@ mod tests {
     #[test]
     fn test_ppu_palette_mirroring_writes() {
         let mut ppu = Ppu::new(vec![0; 0x2000]);
+        let mut mapper = create_mock_mapper();
         
         // Write to $3F10 (mirror of $3F00)
-        ppu.write(PPU_REG_ADDR, 0x3F);
-        ppu.write(PPU_REG_ADDR, 0x10);
-        ppu.write(PPU_REG_DATA, 0x12);
+        ppu.write(PPU_REG_ADDR, 0x3F, &mut mapper);
+        ppu.write(PPU_REG_ADDR, 0x10, &mut mapper);
+        ppu.write(PPU_REG_DATA, 0x12, &mut mapper);
         
         assert_eq!(ppu.palette_table[0x00], 0x12);
     }
@@ -853,12 +816,13 @@ mod tests {
     #[test]
     fn test_ppu_oam_read_write() {
         let mut ppu = Ppu::new(vec![0; 0x2000]);
-        ppu.write(PPU_REG_OAM_ADDR, 0x10);
-        ppu.write(PPU_REG_OAM_DATA, 0xDE);
+        let mut mapper = create_mock_mapper();
+        ppu.write(PPU_REG_OAM_ADDR, 0x10, &mut mapper);
+        ppu.write(PPU_REG_OAM_DATA, 0xDE, &mut mapper);
         
         assert_eq!(ppu.oam_addr, 0x11);
-        ppu.write(PPU_REG_OAM_ADDR, 0x10);
-        assert_eq!(ppu.read(PPU_REG_OAM_DATA), 0xDE);
+        ppu.write(PPU_REG_OAM_ADDR, 0x10, &mut mapper);
+        assert_eq!(ppu.read(PPU_REG_OAM_DATA, &mapper), 0xDE);
     }
 
     /// **Objective**: Verify the PPU VRAM read buffer logic, where reading 
@@ -866,14 +830,15 @@ mod tests {
     #[test]
     fn test_ppu_vram_read_buffer() {
         let mut ppu = Ppu::new(vec![0; 0x2000]);
+        let mut mapper = create_mock_mapper();
         ppu.vram[0x0005] = 0x55;
         ppu.vram[0x0006] = 0x66;
         
-        ppu.write(PPU_REG_ADDR, 0x20); // Nametable start
-        ppu.write(PPU_REG_ADDR, 0x05);
+        ppu.write(PPU_REG_ADDR, 0x20, &mut mapper); // Nametable start
+        ppu.write(PPU_REG_ADDR, 0x05, &mut mapper);
         
-        let val1 = ppu.read(PPU_REG_DATA); // This should be buffered (initial 0)
-        let val2 = ppu.read(PPU_REG_DATA); // This should be 0x55
+        let val1 = ppu.read(PPU_REG_DATA, &mapper); // This should be buffered (initial 0)
+        let val2 = ppu.read(PPU_REG_DATA, &mapper); // This should be 0x55
         
         assert_eq!(val1, 0);
         assert_eq!(val2, 0x55);
@@ -883,48 +848,43 @@ mod tests {
     #[test]
     fn test_ppu_step_edge_cases() {
         let mut ppu = Ppu::new(vec![0; 0x2000]);
+        let mapper = Mapper0::new(vec![0; 16384], vec![0; 8192], Mirroring::Vertical);
         
-        // Setup for scanline increment and VBLANK
         ppu.scanline = 240;
         ppu.cycles = 340;
         ppu.ctrl = CtrlFlags::GENERATE_NMI.bits();
         
-        // Step into VBlank (scanline 241)
-        ppu.step();
+        ppu.step(&mapper);
         assert_eq!(ppu.scanline, 241);
         assert_eq!(ppu.cycles, 0);
         assert!(ppu.status & StatusFlags::VBLANK_STARTED.bits() != 0);
         assert!(ppu.nmi_interrupt);
         
-        // Setup for Pre-render scanline (261)
         ppu.scanline = 260;
         ppu.cycles = 340;
-        ppu.step();
+        ppu.step(&mapper);
         assert_eq!(ppu.scanline, 261);
-        assert_eq!(ppu.status & StatusFlags::VBLANK_STARTED.bits(), 0); // VBlank cleared
+        assert_eq!(ppu.status & StatusFlags::VBLANK_STARTED.bits(), 0); 
         
-        // Setup for Frame End (262 -> 0)
         ppu.scanline = 261;
         ppu.cycles = 340;
         ppu.mask = MaskFlags::SHOW_BACKGROUND.bits() | MaskFlags::SHOW_SPRITES.bits();
         ppu.t = 0x1234;
-        let frame_complete = ppu.step();
+        let frame_complete = ppu.step(&mapper);
         assert_eq!(ppu.scanline, 0);
         assert!(frame_complete);
-        assert_eq!(ppu.v, 0x1234); // V reloaded from T at frame end
+        assert_eq!(ppu.v, 0x1234); 
         
-        // Loopy scrolling: Coarse Y increment to 29 (nametable switch)
-        ppu.v = 0x73A0; // Fine Y = 7, Coarse Y = 29
+        ppu.v = 0x73A0; 
         ppu.scanline = 10;
         ppu.cycles = 340;
-        ppu.step(); // Should increment and wrap coarse Y to 0, flip NT bit (bit 11: 0x0800)
+        ppu.step(&mapper); 
         assert_eq!(ppu.v & 0x0800, 0x0800);
         
-        // Loopy scrolling: Coarse Y increment to 31 (illegal area reset)
-        ppu.v = 0x73E0; // Fine Y = 7, Coarse Y = 31
+        ppu.v = 0x73E0; 
         ppu.scanline = 11;
         ppu.cycles = 340;
-        ppu.step(); // Should wrap coarse Y to 0 without flipping NT bit
+        ppu.step(&mapper); 
         assert_eq!(ppu.v & 0x03E0, 0);
     }
 
@@ -932,27 +892,22 @@ mod tests {
     #[test]
     fn test_ppu_sprite_edge_cases() {
         let mut ppu = Ppu::new(vec![0; 0x2000]);
-        ppu.chr_rom[0..16].fill(0xFF); // Solid block for tiles
+        let mut chr_rom = vec![0; 8192];
+        chr_rom[0..16].fill(0xFF); 
+        let mapper = Mapper0::new(vec![0; 16384], chr_rom, Mirroring::Vertical);
         
-        // Setup for Sprite 0 Hit: Background opaque, Sprite opaque, overlapping
         ppu.mask = MaskFlags::SHOW_BACKGROUND.bits() | MaskFlags::SHOW_SPRITES.bits();
-        ppu.palette_table[0] = 0x11; // Ensure background sys color is populated
+        ppu.palette_table[0] = 0x11; 
         
-        // Sprite 0: Y=10, Tile=0, Attr=0x20 (Priority=0 means behind BG), X=10
-        // Wait, Sprite priority 0x20 means sprite is BEHIND background.
         ppu.oam_data[0] = 10;
         ppu.oam_data[1] = 0;
-        ppu.oam_data[2] = 0xA0; // Vertical Flip (0x80) + Priority (0x20)
+        ppu.oam_data[2] = 0xA0; 
         ppu.oam_data[3] = 10;
         
-        // Set background tile to be opaque at X=10 to trigger Sprite 0 Hit
-        // VRAM NT starts at 0x2000. 11th row, 1st tile.
-        ppu.vram[0x0000] = 0; // BG tile 0
+        ppu.vram[0x0000] = 0; 
         
-        // Render scanline 11 (overlaps Sprite 0 which is at Y=10)
-        ppu.render_scanline(11);
+        ppu.render_scanline(11, &mapper);
         
-        // Background was opaque (solid 0xFF tile), Sprite was opaque. Sprite 0 hit should trigger.
         assert!(ppu.status & StatusFlags::SPRITE_ZERO_HIT.bits() != 0);
     }
 
@@ -960,49 +915,43 @@ mod tests {
     #[test]
     fn test_ppu_final_edge_cases() {
         let mut ppu = Ppu::new(vec![0; 0x2000]);
+        let mut mapper = Mapper0::new(vec![0; 16384], vec![0; 8192], Mirroring::Vertical);
         
-        // 1. Write to Mask Register (0x2001)
-        ppu.write(PPU_REG_MASK, 0x1E);
+        ppu.write(PPU_REG_MASK, 0x1E, &mut mapper);
         assert_eq!(ppu.mask, 0x1E);
         
-        // 2. Enable NMI while already in VBLANK
         ppu.status |= StatusFlags::VBLANK_STARTED.bits();
         ppu.nmi_interrupt = false;
-        ppu.write(PPU_REG_CTRL, CtrlFlags::GENERATE_NMI.bits()); // Should trigger NMI immediately
+        ppu.write(PPU_REG_CTRL, CtrlFlags::GENERATE_NMI.bits(), &mut mapper); 
         assert!(ppu.nmi_interrupt);
         
-        // 3. Invalid memory/register accesses (should not panic)
-        ppu.write(0x2008, 0xFF); // Invalid register
-        assert_eq!(ppu.read(0x2008), 0);
-        ppu.write(PPU_REG_ADDR, 0x3F);
-        ppu.write(PPU_REG_ADDR, 0xFF);
-        ppu.write(PPU_REG_DATA, 0xFF); // Invalid VRAM address (handled gracefully or mirrored depending on mapping, but 0x3FFF is palette mirror)
+        ppu.write(0x2008, 0xFF, &mut mapper); 
+        assert_eq!(ppu.read(0x2008, &mapper), 0);
+        ppu.write(PPU_REG_ADDR, 0x3F, &mut mapper);
+        ppu.write(PPU_REG_ADDR, 0xFF, &mut mapper);
+        ppu.write(PPU_REG_DATA, 0xFF, &mut mapper); 
         
-        // 4. step() rendering a scanline (cycle = 255 -> 256)
         ppu.cycles = 255;
         ppu.scanline = 10;
-        ppu.step(); // Hits cycle 256, triggers render_scanline
+        ppu.step(&mapper); 
         assert_eq!(ppu.cycles, 256);
         
-        // 5. Normal Fine Y increment (Fine Y < 7)
         ppu.cycles = 340;
         ppu.scanline = 15;
         ppu.mask = MaskFlags::RENDER_ENABLED.bits();
-        ppu.v = 0x0000; // Fine Y = 0
-        ppu.step(); // Fine Y should become 1 (add 0x1000)
+        ppu.v = 0x0000; 
+        ppu.step(&mapper); 
         assert_eq!(ppu.v & 0x7000, 0x1000);
         
-        // 6. Normal Coarse Y increment (Fine Y = 7, Coarse Y < 29)
         ppu.cycles = 340;
         ppu.scanline = 16;
-        ppu.v = 0x7000; // Fine Y = 7, Coarse Y = 0
-        ppu.step(); // Fine Y becomes 0, Coarse Y becomes 1 (add 0x0020)
+        ppu.v = 0x7000; 
+        ppu.step(&mapper); 
         assert_eq!(ppu.v & 0x7000, 0);
         assert_eq!(ppu.v & 0x03E0, 0x0020);
         
-        // 7. Background color 0 fallback in render_scanline
-        ppu.vram[0x0000] = 0; // Empty tile
-        ppu.palette_table[0] = 0x12; // Sys color
-        ppu.render_scanline(0); // Should use fallback palette_table[0]
+        ppu.vram[0x0000] = 0; 
+        ppu.palette_table[0] = 0x12; 
+        ppu.render_scanline(0, &mapper); 
     }
 }

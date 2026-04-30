@@ -803,7 +803,7 @@ mod tests {
         apu.step_frame_counter();
         
         assert_eq!(apu.triangle.linear_counter, 10);
-        assert_eq!(apu.triangle.reload_flag, false); // Cleared after reload since control_flag = false
+        assert!(!apu.triangle.reload_flag); // Cleared after reload since control_flag = false
     }
 
     /// **Objective**: Achieve full coverage on the APU frame sequences, mixer formulas, and routing.

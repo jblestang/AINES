@@ -1,16 +1,13 @@
+use super::mapper::{Mapper, Mapper0, Mapper1, Mirroring};
+
 pub struct Cartridge {
-    pub prg_rom: Vec<u8>,
-    pub chr_rom: Vec<u8>,
-    pub mapper: u8,
-    pub vertical_mirroring: bool,
+    pub mapper: Box<dyn Mapper>,
+    pub mapper_id: u8,
 }
 
 /// Standard iNES header size (16 bytes)
 pub const INES_HEADER_SIZE: usize = 16;
-/// Size of a single PRG-ROM bank (16KB)
-pub const PRG_BANK_SIZE: usize = 16384;
-/// Size of a single CHR-ROM bank (8KB)
-pub const CHR_BANK_SIZE: usize = 8192;
+pub use super::mapper::{PRG_BANK_SIZE_16K as PRG_BANK_SIZE, CHR_BANK_SIZE_8K as CHR_BANK_SIZE};
 /// Size of the trainer block if present (512 bytes)
 pub const TRAINER_SIZE: usize = 512;
 /// Magic constant at start of iNES files ("NES" + 0x1A)
@@ -23,13 +20,6 @@ pub const FLAG_TRAINER_PRESENT: u8 = 0x04;
 impl Cartridge {
 
     /// Parses a raw byte array as an iNES (.nes) file.
-    /// 
-    /// # iNES Parsing Algorithm
-    /// 1. **Header Validation**: Checks for "NES" + EOF constant.
-    /// 2. **Metadata Extraction**: Reads PRG/CHR bank counts and flags (Mirroring, Mapper ID).
-    /// 3. **Trainer Skip**: If the Trainer flag is set, skips 512 bytes of compatibility data.
-    /// 4. **Bank Loading**: Copies the specified number of 16KB PRG banks and 8KB CHR banks.
-    /// 5. **CHR-RAM Support**: If CHR count is 0, initializes 8KB of writable CHR-RAM.
     pub fn load_rom(data: &[u8]) -> Result<Self, String> {
         if data.len() < INES_HEADER_SIZE {
             return Err("File too small to be a NES ROM".to_string());
@@ -44,11 +34,7 @@ impl Cartridge {
         let chr_banks = data[5] as usize;
         let mapper1 = data[6] >> 4;
         let mapper2 = data[7] >> 4;
-        let mapper = (mapper2 << 4) | mapper1;
-
-        if mapper != 0 {
-            return Err(format!("Unsupported mapper: {}", mapper));
-        }
+        let mapper_id = (mapper2 << 4) | mapper1;
 
         let prg_size = prg_banks * PRG_BANK_SIZE;
         let chr_size = chr_banks * CHR_BANK_SIZE;
@@ -75,12 +61,17 @@ impl Cartridge {
         };
 
         let vertical_mirroring = (data[6] & FLAG_VERTICAL_MIRROR) != 0;
+        let mirroring = if vertical_mirroring { Mirroring::Vertical } else { Mirroring::Horizontal };
+
+        let mapper: Box<dyn Mapper> = match mapper_id {
+            0 => Box::new(Mapper0::new(prg_rom, chr_rom, mirroring)),
+            1 => Box::new(Mapper1::new(prg_rom, chr_rom, mirroring)),
+            _ => return Err(format!("Unsupported mapper: {}", mapper_id)),
+        };
 
         Ok(Cartridge {
-            prg_rom,
-            chr_rom,
             mapper,
-            vertical_mirroring,
+            mapper_id,
         })
     }
 }
@@ -105,16 +96,16 @@ mod tests {
         
         let cart = Cartridge::load_rom(&data).unwrap();
         
-        assert_eq!(cart.prg_rom.len(), PRG_BANK_SIZE);
-        assert_eq!(cart.chr_rom.len(), CHR_BANK_SIZE);
-        assert_eq!(cart.prg_rom[0], 0xDE);
-        assert_eq!(cart.chr_rom[0], 0xAD);
-        assert!(cart.vertical_mirroring);
-        assert_eq!(cart.mapper, 0);
+        assert_eq!(cart.mapper.prg_read(0x8000), 0xDE);
+        assert_eq!(cart.mapper.chr_read(0x0000), 0xAD);
+        assert_eq!(cart.mapper.mirroring(), Mirroring::Vertical);
+        assert_eq!(cart_id_helper(&cart), 0);
     }
 
-    /// **Objective**: Verify that the Cartridge correctly handles the "Trainer" block 
-    /// by skipping the 512-byte compatibility region.
+    fn cart_id_helper(cart: &Cartridge) -> u8 {
+        cart.mapper_id
+    }
+
     #[test]
     fn test_cartridge_with_trainer() {
         let mut data = vec![0; INES_HEADER_SIZE + TRAINER_SIZE + PRG_BANK_SIZE];
@@ -126,11 +117,9 @@ mod tests {
         data[INES_HEADER_SIZE + TRAINER_SIZE] = 0xBE;
         
         let cart = Cartridge::load_rom(&data).unwrap();
-        assert_eq!(cart.prg_rom[0], 0xBE);
+        assert_eq!(cart.mapper.prg_read(0x8000), 0xBE);
     }
 
-    /// **Objective**: Verify that the horizontal and vertical mirroring flags 
-    /// are correctly parsed from the iNES header.
     #[test]
     fn test_cartridge_mirroring_flags() {
         let mut data = vec![0; INES_HEADER_SIZE + PRG_BANK_SIZE];
@@ -140,16 +129,14 @@ mod tests {
         // Vertical mirroring (Bit 0 set)
         data[6] = 0x01;
         let cart_v = Cartridge::load_rom(&data).unwrap();
-        assert_eq!(cart_v.vertical_mirroring, true);
+        assert_eq!(cart_v.mapper.mirroring(), Mirroring::Vertical);
         
         // Horizontal mirroring (Bit 0 clear)
         data[6] = 0x00;
         let cart_h = Cartridge::load_rom(&data).unwrap();
-        assert_eq!(cart_h.vertical_mirroring, false);
+        assert_eq!(cart_h.mapper.mirroring(), Mirroring::Horizontal);
     }
 
-    /// **Objective**: Verify that 32KB PRG-ROM (2 banks) is correctly loaded 
-    /// and stored as a single contiguous buffer.
     #[test]
     fn test_cartridge_32k_prg() {
         let mut data = vec![0; INES_HEADER_SIZE + PRG_BANK_SIZE * 2];
@@ -160,13 +147,10 @@ mod tests {
         data[INES_HEADER_SIZE + PRG_BANK_SIZE] = 0x22;
         
         let cart = Cartridge::load_rom(&data).unwrap();
-        assert_eq!(cart.prg_rom.len(), 32768);
-        assert_eq!(cart.prg_rom[0], 0x11);
-        assert_eq!(cart.prg_rom[PRG_BANK_SIZE], 0x22);
+        assert_eq!(cart.mapper.prg_read(0x8000), 0x11);
+        assert_eq!(cart.mapper.prg_read(0xC000), 0x22);
     }
 
-    /// **Objective**: Verify that the Cartridge loader correctly rejects 
-    /// files with an invalid iNES magic header.
     #[test]
     fn test_cartridge_invalid_magic() {
         let mut data = vec![0; 100];
@@ -175,14 +159,12 @@ mod tests {
         assert!(result.is_err());
     }
 
-    /// **Objective**: Verify that the Cartridge loader correctly rejects 
-    /// mappers that are not currently implemented (only Mapper 0 is supported).
     #[test]
     fn test_cartridge_unsupported_mapper() {
         let mut data = vec![0; INES_HEADER_SIZE + PRG_BANK_SIZE];
         data[0..4].copy_from_slice(INES_MAGIC);
         data[4] = 1;
-        data[6] = 0x10; // Mapper 1 (upper nibble of flag 6)
+        data[6] = 0x20; // Mapper 2 (upper nibble of flag 6)
         
         let result = Cartridge::load_rom(&data);
         assert!(result.is_err());

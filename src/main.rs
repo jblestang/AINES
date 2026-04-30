@@ -150,7 +150,7 @@ fn setup(
         Ok(data) => {
             match Cartridge::load_rom(&data) {
                 Ok(cartridge) => {
-                    println!("Successfully loaded default ROM! Mapper: {}", cartridge.mapper);
+                    println!("Successfully loaded default ROM! Mapper: {}", cartridge.mapper_id);
                     let mut emulator = NesEmulator::new(cartridge);
                     emulator.cpu.reset(&mut emulator.bus);
                     emulator.running = true;
@@ -181,7 +181,7 @@ fn ui_system(
                 Ok(data) => {
                     match Cartridge::load_rom(&data) {
                         Ok(cartridge) => {
-                            println!("Successfully loaded ROM! Mapper: {}", cartridge.mapper);
+                            println!("Successfully loaded ROM! Mapper: {}", cartridge.mapper_id);
                             let mut emulator = NesEmulator::new(cartridge);
                             emulator.cpu.reset(&mut emulator.bus);
                             emulator.running = true;
@@ -254,7 +254,7 @@ fn emulator_system(
                     }
 
                     for _ in 0..PPU_CPU_CYCLE_RATIO {
-                        frame_complete = bus.ppu.step();
+                        frame_complete = bus.ppu.step(&*bus.cartridge.mapper);
                         if frame_complete { break; }
                     }
                     if frame_complete { break; }
