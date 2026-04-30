@@ -934,6 +934,102 @@ impl Cpu {
                 2
             }
 
+            // ══════════════════════════════════════════════════════════════════
+            // Unofficial / Illegal Opcodes
+            // https://www.nesdev.org/wiki/CPU_unofficial_opcodes
+            // ══════════════════════════════════════════════════════════════════
+
+            // ── Unofficial NOPs (no side-effects, just consume operand bytes) ──
+            0x1A | 0x3A | 0x5A | 0x7A | 0xDA | 0xFA => { 2 } // NOP Implied
+            0x80 | 0x82 | 0x89 | 0xC2 | 0xE2 => { self.pc += 1; 2 } // NOP Immediate
+            0x04 | 0x44 | 0x64 => { self.pc += 1; 3 }               // NOP ZeroPage
+            0x14 | 0x34 | 0x54 | 0x74 | 0xD4 | 0xF4 => { self.pc += 1; 4 } // NOP ZeroPageX
+            0x0C => { self.pc += 2; 4 }                              // NOP Absolute
+            0x1C | 0x3C | 0x5C | 0x7C | 0xDC | 0xFC => {            // NOP AbsoluteX
+                let (_, page_crossed) = self.get_operand_address(bus, &AddressingMode::AbsoluteX);
+                self.pc += 2;
+                if page_crossed { 5 } else { 4 }
+            }
+
+            // ── LAX: LDA + LDX (same operand into both A and X) ──────────────
+            // https://www.nesdev.org/wiki/CPU_unofficial_opcodes#LAX
+            0xA3 => { self.lda(bus, &AddressingMode::IndirectX); self.x = self.a; self.pc += 1; 6 }
+            0xA7 => { self.lda(bus, &AddressingMode::ZeroPage);  self.x = self.a; self.pc += 1; 3 }
+            0xAF => { self.lda(bus, &AddressingMode::Absolute);  self.x = self.a; self.pc += 2; 4 }
+            0xB3 => { let pc = self.lda(bus, &AddressingMode::IndirectY); self.x = self.a; self.pc += 1; 5 + u32::from(pc) }
+            0xB7 => { self.lda(bus, &AddressingMode::ZeroPageY); self.x = self.a; self.pc += 1; 4 }
+            0xBF => { let pc = self.lda(bus, &AddressingMode::AbsoluteY); self.x = self.a; self.pc += 2; 4 + u32::from(pc) }
+
+            // ── SAX: Store A & X into memory ──────────────────────────────────
+            // https://www.nesdev.org/wiki/CPU_unofficial_opcodes#SAX
+            0x83 => { let (addr, _) = self.get_operand_address(bus, &AddressingMode::IndirectX); Self::mem_write(bus, addr, self.a & self.x); self.pc += 1; 6 }
+            0x87 => { let (addr, _) = self.get_operand_address(bus, &AddressingMode::ZeroPage);  Self::mem_write(bus, addr, self.a & self.x); self.pc += 1; 3 }
+            0x8F => { let (addr, _) = self.get_operand_address(bus, &AddressingMode::Absolute);  Self::mem_write(bus, addr, self.a & self.x); self.pc += 2; 4 }
+            0x97 => { let (addr, _) = self.get_operand_address(bus, &AddressingMode::ZeroPageY); Self::mem_write(bus, addr, self.a & self.x); self.pc += 1; 4 }
+
+            // ── DCP: DEC memory, then CMP A with result ───────────────────────
+            // https://www.nesdev.org/wiki/CPU_unofficial_opcodes#DCP
+            0xC3 => { self.dec(bus, &AddressingMode::IndirectX); self.cmp(bus, &AddressingMode::IndirectX); self.pc += 1; 8 }
+            0xC7 => { self.dec(bus, &AddressingMode::ZeroPage);  self.cmp(bus, &AddressingMode::ZeroPage);  self.pc += 1; 5 }
+            0xCF => { self.dec(bus, &AddressingMode::Absolute);  self.cmp(bus, &AddressingMode::Absolute);  self.pc += 2; 6 }
+            0xD3 => { self.dec(bus, &AddressingMode::IndirectY); self.cmp(bus, &AddressingMode::IndirectY); self.pc += 1; 8 }
+            0xD7 => { self.dec(bus, &AddressingMode::ZeroPageX); self.cmp(bus, &AddressingMode::ZeroPageX); self.pc += 1; 6 }
+            0xDB => { self.dec(bus, &AddressingMode::AbsoluteY); self.cmp(bus, &AddressingMode::AbsoluteY); self.pc += 2; 7 }
+            0xDF => { self.dec(bus, &AddressingMode::AbsoluteX); self.cmp(bus, &AddressingMode::AbsoluteX); self.pc += 2; 7 }
+
+            // ── ISB/ISC: INC memory, then SBC A with result ───────────────────
+            // https://www.nesdev.org/wiki/CPU_unofficial_opcodes#ISC
+            0xE3 => { self.inc(bus, &AddressingMode::IndirectX); self.sbc(bus, &AddressingMode::IndirectX); self.pc += 1; 8 }
+            0xE7 => { self.inc(bus, &AddressingMode::ZeroPage);  self.sbc(bus, &AddressingMode::ZeroPage);  self.pc += 1; 5 }
+            0xEF => { self.inc(bus, &AddressingMode::Absolute);  self.sbc(bus, &AddressingMode::Absolute);  self.pc += 2; 6 }
+            0xF3 => { self.inc(bus, &AddressingMode::IndirectY); self.sbc(bus, &AddressingMode::IndirectY); self.pc += 1; 8 }
+            0xF7 => { self.inc(bus, &AddressingMode::ZeroPageX); self.sbc(bus, &AddressingMode::ZeroPageX); self.pc += 1; 6 }
+            0xFB => { self.inc(bus, &AddressingMode::AbsoluteY); self.sbc(bus, &AddressingMode::AbsoluteY); self.pc += 2; 7 }
+            0xFF => { self.inc(bus, &AddressingMode::AbsoluteX); self.sbc(bus, &AddressingMode::AbsoluteX); self.pc += 2; 7 }
+
+            // ── SLO: ASL memory, then ORA A ────────────────────────────────────
+            // https://www.nesdev.org/wiki/CPU_unofficial_opcodes#SLO
+            0x03 => { self.asl(bus, &AddressingMode::IndirectX); self.ora(bus, &AddressingMode::IndirectX); self.pc += 1; 8 }
+            0x07 => { self.asl(bus, &AddressingMode::ZeroPage);  self.ora(bus, &AddressingMode::ZeroPage);  self.pc += 1; 5 }
+            0x0F => { self.asl(bus, &AddressingMode::Absolute);  self.ora(bus, &AddressingMode::Absolute);  self.pc += 2; 6 }
+            0x13 => { self.asl(bus, &AddressingMode::IndirectY); self.ora(bus, &AddressingMode::IndirectY); self.pc += 1; 8 }
+            0x17 => { self.asl(bus, &AddressingMode::ZeroPageX); self.ora(bus, &AddressingMode::ZeroPageX); self.pc += 1; 6 }
+            0x1B => { self.asl(bus, &AddressingMode::AbsoluteY); self.ora(bus, &AddressingMode::AbsoluteY); self.pc += 2; 7 }
+            0x1F => { self.asl(bus, &AddressingMode::AbsoluteX); self.ora(bus, &AddressingMode::AbsoluteX); self.pc += 2; 7 }
+
+            // ── SRE: LSR memory, then EOR A ────────────────────────────────────
+            // https://www.nesdev.org/wiki/CPU_unofficial_opcodes#SRE
+            0x43 => { self.lsr(bus, &AddressingMode::IndirectX); self.eor(bus, &AddressingMode::IndirectX); self.pc += 1; 8 }
+            0x47 => { self.lsr(bus, &AddressingMode::ZeroPage);  self.eor(bus, &AddressingMode::ZeroPage);  self.pc += 1; 5 }
+            0x4F => { self.lsr(bus, &AddressingMode::Absolute);  self.eor(bus, &AddressingMode::Absolute);  self.pc += 2; 6 }
+            0x53 => { self.lsr(bus, &AddressingMode::IndirectY); self.eor(bus, &AddressingMode::IndirectY); self.pc += 1; 8 }
+            0x57 => { self.lsr(bus, &AddressingMode::ZeroPageX); self.eor(bus, &AddressingMode::ZeroPageX); self.pc += 1; 6 }
+            0x5B => { self.lsr(bus, &AddressingMode::AbsoluteY); self.eor(bus, &AddressingMode::AbsoluteY); self.pc += 2; 7 }
+            0x5F => { self.lsr(bus, &AddressingMode::AbsoluteX); self.eor(bus, &AddressingMode::AbsoluteX); self.pc += 2; 7 }
+
+            // ── RLA: ROL memory, then AND A ────────────────────────────────────
+            // https://www.nesdev.org/wiki/CPU_unofficial_opcodes#RLA
+            0x23 => { self.rol(bus, &AddressingMode::IndirectX); self.and(bus, &AddressingMode::IndirectX); self.pc += 1; 8 }
+            0x27 => { self.rol(bus, &AddressingMode::ZeroPage);  self.and(bus, &AddressingMode::ZeroPage);  self.pc += 1; 5 }
+            0x2F => { self.rol(bus, &AddressingMode::Absolute);  self.and(bus, &AddressingMode::Absolute);  self.pc += 2; 6 }
+            0x33 => { self.rol(bus, &AddressingMode::IndirectY); self.and(bus, &AddressingMode::IndirectY); self.pc += 1; 8 }
+            0x37 => { self.rol(bus, &AddressingMode::ZeroPageX); self.and(bus, &AddressingMode::ZeroPageX); self.pc += 1; 6 }
+            0x3B => { self.rol(bus, &AddressingMode::AbsoluteY); self.and(bus, &AddressingMode::AbsoluteY); self.pc += 2; 7 }
+            0x3F => { self.rol(bus, &AddressingMode::AbsoluteX); self.and(bus, &AddressingMode::AbsoluteX); self.pc += 2; 7 }
+
+            // ── RRA: ROR memory, then ADC A ────────────────────────────────────
+            // https://www.nesdev.org/wiki/CPU_unofficial_opcodes#RRA
+            0x63 => { self.ror(bus, &AddressingMode::IndirectX); self.adc(bus, &AddressingMode::IndirectX); self.pc += 1; 8 }
+            0x67 => { self.ror(bus, &AddressingMode::ZeroPage);  self.adc(bus, &AddressingMode::ZeroPage);  self.pc += 1; 5 }
+            0x6F => { self.ror(bus, &AddressingMode::Absolute);  self.adc(bus, &AddressingMode::Absolute);  self.pc += 2; 6 }
+            0x73 => { self.ror(bus, &AddressingMode::IndirectY); self.adc(bus, &AddressingMode::IndirectY); self.pc += 1; 8 }
+            0x77 => { self.ror(bus, &AddressingMode::ZeroPageX); self.adc(bus, &AddressingMode::ZeroPageX); self.pc += 1; 6 }
+            0x7B => { self.ror(bus, &AddressingMode::AbsoluteY); self.adc(bus, &AddressingMode::AbsoluteY); self.pc += 2; 7 }
+            0x7F => { self.ror(bus, &AddressingMode::AbsoluteX); self.adc(bus, &AddressingMode::AbsoluteX); self.pc += 2; 7 }
+
+            // ── *SBC: Unofficial SBC Immediate (identical to official $E9) ────
+            0xEB => { self.sbc(bus, &AddressingMode::Immediate); self.pc += 1; 2 }
+
             _ => {
                 println!("Unimplemented Opcode: {opcode:#X}");
                 2
