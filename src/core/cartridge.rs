@@ -21,14 +21,6 @@ pub const FLAG_VERTICAL_MIRROR: u8 = 0x01;
 pub const FLAG_TRAINER_PRESENT: u8 = 0x04;
 
 impl Cartridge {
-    pub fn new() -> Self {
-        Cartridge {
-            prg_rom: vec![0; PRG_BANK_SIZE * 2], // Default 32KB
-            chr_rom: vec![0; CHR_BANK_SIZE],     // Default 8KB
-            mapper: 0,
-            vertical_mirroring: true,
-        }
-    }
 
     /// Parses a raw byte array as an iNES (.nes) file.
     /// 
