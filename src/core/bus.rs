@@ -98,7 +98,7 @@ impl Bus {
                 } else {
                     addr & PRG_ROM_MASK_32K
                 };
-                self.cartridge.prg_rom[mapped_addr as usize]
+                self.cartridge.prg_rom.get(mapped_addr as usize).copied().unwrap_or(0)
             }
             _ => 0,
         }

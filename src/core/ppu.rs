@@ -335,8 +335,8 @@ impl Ppu {
                 
                 // Read from VRAM into the buffer
                 self.internal_data_buf = match addr {
-                    CHR_ROM_START..=CHR_ROM_END => self.chr_rom[addr as usize],
-                    VRAM_NT_START..=VRAM_NT_END => self.vram[self.mirror_vram_addr(addr) as usize],
+                    CHR_ROM_START..=CHR_ROM_END => self.chr_rom.get(addr as usize).copied().unwrap_or(0),
+                    VRAM_NT_START..=VRAM_NT_END => self.vram.get(self.mirror_vram_addr(addr) as usize).copied().unwrap_or(0),
                     _ => 0,
                 };
                 
