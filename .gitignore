@@ -1,0 +1,8 @@
+/target
+*.txt
+*.raw
+*.bin
+*.png
+/dma_test
+/test_nmi
+/src/assets/*.nes
