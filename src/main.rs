@@ -3,11 +3,21 @@ mod core;
 use bevy::prelude::*;
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::window::PrimaryWindow;
-use bevy_egui::{egui, EguiContext, EguiPlugin};
+use bevy_egui::{EguiContext, EguiPlugin};
 use egui_file_dialog::FileDialog;
 use std::fs;
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use ringbuf::HeapRb;
 
-use std::io::Write;
+// Audio output stream wrapper
+#[derive(Resource)]
+pub struct AudioStream {
+    pub producer: ringbuf::Producer<f32, std::sync::Arc<HeapRb<f32>>>,
+    pub sample_rate: f32,
+    pub channels: u16,
+}
+
+// use std::io::Write;
 
 use crate::core::bus::Bus;
 use crate::core::cartridge::Cartridge;
@@ -27,39 +37,7 @@ impl NesEmulator {
         NesEmulator {
             cpu: Cpu::new(),
             bus: Bus::new(cartridge),
-            running: false,
-        }
-    }
-
-    fn step_frame(&mut self) {
-        if !self.running { return; }
-
-        let mut _frame_complete = false;
-        while !_frame_complete {
-            let cycles = self.cpu.step(&mut self.bus);
-            
-            if self.bus.ppu.nmi_interrupt {
-                self.cpu.nmi(&mut self.bus);
-                self.bus.ppu.nmi_interrupt = false;
-            }
-
-            // PPU runs 3 times for every CPU cycle
-            for _ in 0..(cycles * 3) {
-                _frame_complete = self.bus.ppu.step();
-                if _frame_complete { break; }
-            }
-        }
-
-        static mut FRAMES: u32 = 0;
-        unsafe {
-            FRAMES += 1;
-            if FRAMES == 120 {
-                let mut f = std::fs::File::create("frame.raw").unwrap();
-                f.write_all(&self.bus.ppu.frame_buffer).unwrap();
-                std::fs::write("vram.bin", &self.bus.ppu.vram).unwrap();
-                println!("PALETTE: {:?}", self.bus.ppu.palette_table);
-                println!("DUMPED FRAME 120!");
-            }
+            running: true,
         }
     }
 }
@@ -130,6 +108,33 @@ fn setup(
         ScreenSprite,
     ));
 
+    // Initialize Audio
+    let host = cpal::default_host();
+    let device = host.default_output_device().expect("no output device available");
+    let config = device.default_output_config().unwrap();
+    let sample_rate = config.sample_rate().0 as f32;
+    let channels = config.channels();
+    
+    let rb = HeapRb::<f32>::new(4096);
+    let (producer, mut consumer) = rb.split();
+    
+    let _stream = device.build_output_stream(
+        &config.into(),
+        move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
+            for sample in data.iter_mut() {
+                *sample = consumer.pop().unwrap_or(0.0);
+            }
+        },
+        |err| eprintln!("audio stream error: {}", err),
+        None
+    ).unwrap();
+    _stream.play().unwrap();
+
+    // We must keep the stream alive. Leaking it is acceptable for a singleton.
+    std::mem::forget(_stream);
+
+    commands.insert_resource(AudioStream { producer, sample_rate, channels });
+
     // Load default ROM
     let default_rom_path = "src/assets/Super Mario Bros. (World).nes";
     match fs::read(default_rom_path) {
@@ -185,12 +190,13 @@ fn ui_system(
         }
     }
 }
-
 fn emulator_system(
     emulator: Option<ResMut<NesEmulator>>,
     mut images: ResMut<Assets<Image>>,
     query: Query<&Sprite, With<ScreenSprite>>,
     keyboard_input: Res<ButtonInput<KeyCode>>,
+    _time: Res<Time>,
+    mut audio: ResMut<AudioStream>,
 ) {
     let mut emu = match emulator {
         Some(e) => e,
@@ -216,25 +222,52 @@ fn emulator_system(
         emu.bus.joypad1.set_button_pressed_status(JoypadButton::START, keyboard_input.pressed(KeyCode::Enter));
         emu.bus.joypad1.set_button_pressed_status(JoypadButton::SELECT, keyboard_input.pressed(KeyCode::ShiftRight));
 
-        // Run enough cycles to complete one frame
-        emu.step_frame();
+        let mut updated = false;
 
-        // Update the Bevy texture with the PPU's framebuffer
-        for sprite in query.iter() {
-            if let Some(image) = images.get_mut(&sprite.image) {
-                if let Some(data) = &mut image.data {
-                    data.copy_from_slice(&emu.bus.ppu.frame_buffer);
+        // Sampling rate tracking
+        static mut SAMPLE_ACCUMULATOR: f32 = 0.0;
+        let sample_step = 1_789_773.0 / audio.sample_rate; // Hardware-accurate ratio
+
+        // Audio-driven sync: Run emulator until audio buffer is sufficiently full
+        // We want to keep about 2048-3072 samples in the 4096 buffer
+        while audio.producer.free_len() > 1024 {
+            let mut _frame_complete = false;
+            let NesEmulator { cpu, bus, .. } = &mut *emu;
+
+            while !_frame_complete {
+                let cycles = cpu.step(bus);
+                for _ in 0..cycles {
+                    bus.apu.step();
+                    
+                    unsafe {
+                        SAMPLE_ACCUMULATOR += 1.0;
+                        if SAMPLE_ACCUMULATOR >= sample_step {
+                            let sample = bus.apu.output();
+                            for _ in 0..audio.channels {
+                                let _ = audio.producer.push(sample);
+                            }
+                            SAMPLE_ACCUMULATOR -= sample_step;
+                        }
+                    }
+
+                    for _ in 0..3 {
+                        _frame_complete = bus.ppu.step();
+                        if _frame_complete { break; }
+                    }
+                    if _frame_complete { break; }
                 }
             }
+            updated = true;
         }
-        
-        // Debug: Dump frame to file occasionally
-        static mut FRAME_COUNT: u32 = 0;
-        unsafe {
-            FRAME_COUNT += 1;
-            if FRAME_COUNT == 120 {
-                println!("DUMPED FRAME 120!");
-                // (Optional: write to file)
+
+        if updated {
+            // Update the Bevy texture with the PPU's framebuffer
+            for sprite in query.iter() {
+                if let Some(image) = images.get_mut(&sprite.image) {
+                    if let Some(data) = &mut image.data {
+                        data.copy_from_slice(&emu.bus.ppu.frame_buffer);
+                    }
+                }
             }
         }
     }

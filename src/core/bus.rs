@@ -9,6 +9,7 @@ pub struct Bus {
     pub cartridge: Cartridge,
     pub apu: Apu,
     pub joypad1: Joypad,
+    pub dma_cycles: u32,
 }
 
 impl Bus {
@@ -21,6 +22,7 @@ impl Bus {
             cartridge,
             apu: Apu::new(),
             joypad1: Joypad::new(),
+            dma_cycles: 0,
         }
     }
 
@@ -62,6 +64,7 @@ impl Bus {
                     buffer[i as usize] = self.read(hi + i);
                 }
                 self.ppu.oam_data = buffer;
+                self.dma_cycles += 513;
             }
             0x4016 => {
                 self.joypad1.write(data);

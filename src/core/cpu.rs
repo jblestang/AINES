@@ -128,43 +128,50 @@ impl Cpu {
         }
     }
 
-    fn get_operand_address(&mut self, bus: &mut Bus, mode: &AddressingMode) -> u16 {
+    fn get_operand_address(&mut self, bus: &mut Bus, mode: &AddressingMode) -> (u16, bool) {
         match mode {
-            AddressingMode::Immediate => self.pc,
-            AddressingMode::ZeroPage => self.mem_read(bus, self.pc) as u16,
-            AddressingMode::Absolute => self.mem_read_u16(bus, self.pc),
+            AddressingMode::Immediate => (self.pc, false),
+            AddressingMode::ZeroPage => (self.mem_read(bus, self.pc) as u16, false),
+            AddressingMode::Absolute => (self.mem_read_u16(bus, self.pc), false),
             AddressingMode::ZeroPageX => {
                 let pos = self.mem_read(bus, self.pc);
-                pos.wrapping_add(self.x) as u16
+                (pos.wrapping_add(self.x) as u16, false)
             }
             AddressingMode::ZeroPageY => {
                 let pos = self.mem_read(bus, self.pc);
-                pos.wrapping_add(self.y) as u16
+                (pos.wrapping_add(self.y) as u16, false)
             }
             AddressingMode::AbsoluteX => {
                 let base = self.mem_read_u16(bus, self.pc);
-                base.wrapping_add(self.x as u16)
+                let addr = base.wrapping_add(self.x as u16);
+                (addr, self.page_crossed(base, addr))
             }
             AddressingMode::AbsoluteY => {
                 let base = self.mem_read_u16(bus, self.pc);
-                base.wrapping_add(self.y as u16)
+                let addr = base.wrapping_add(self.y as u16);
+                (addr, self.page_crossed(base, addr))
             }
             AddressingMode::IndirectX => {
                 let base = self.mem_read(bus, self.pc);
                 let ptr = base.wrapping_add(self.x);
                 let lo = self.mem_read(bus, ptr as u16);
                 let hi = self.mem_read(bus, ptr.wrapping_add(1) as u16);
-                ((hi as u16) << 8) | (lo as u16)
+                (((hi as u16) << 8) | (lo as u16), false)
             }
             AddressingMode::IndirectY => {
                 let base = self.mem_read(bus, self.pc);
                 let lo = self.mem_read(bus, base as u16);
                 let hi = self.mem_read(bus, base.wrapping_add(1) as u16);
                 let deref_base = ((hi as u16) << 8) | (lo as u16);
-                deref_base.wrapping_add(self.y as u16)
+                let addr = deref_base.wrapping_add(self.y as u16);
+                (addr, self.page_crossed(deref_base, addr))
             }
             AddressingMode::NoneAddressing => panic!("mode {:?} is not supported", mode),
         }
+    }
+
+    fn page_crossed(&self, addr1: u16, addr2: u16) -> bool {
+        (addr1 & 0xFF00) != (addr2 & 0xFF00)
     }
 
     fn get_operand_address_for_jmp_indirect(&mut self, bus: &mut Bus) -> u16 {
@@ -181,48 +188,56 @@ impl Cpu {
         indirect_ref
     }
 
-    fn branch(&mut self, bus: &mut Bus, condition: bool) {
+    fn branch(&mut self, bus: &mut Bus, condition: bool) -> u32 {
         let jump: i8 = self.mem_read(bus, self.pc) as i8;
+        self.pc = self.pc.wrapping_add(1);
         if condition {
-            self.pc = self.pc.wrapping_add(1).wrapping_add(jump as u16);
-        } else {
-            self.pc = self.pc.wrapping_add(1);
+            let old_pc = self.pc;
+            self.pc = self.pc.wrapping_add(jump as u16);
+            if self.page_crossed(old_pc, self.pc) {
+                return 2;
+            }
+            return 1;
         }
+        0
     }
 
-    fn lda(&mut self, bus: &mut Bus, mode: &AddressingMode) {
-        let addr = self.get_operand_address(bus, mode);
+    fn lda(&mut self, bus: &mut Bus, mode: &AddressingMode) -> bool {
+        let (addr, page_crossed) = self.get_operand_address(bus, mode);
         let value = self.mem_read(bus, addr);
         self.a = value;
         self.update_zero_and_negative_flags(self.a);
+        page_crossed
     }
 
-    fn ldx(&mut self, bus: &mut Bus, mode: &AddressingMode) {
-        let addr = self.get_operand_address(bus, mode);
+    fn ldx(&mut self, bus: &mut Bus, mode: &AddressingMode) -> bool {
+        let (addr, page_crossed) = self.get_operand_address(bus, mode);
         let value = self.mem_read(bus, addr);
         self.x = value;
         self.update_zero_and_negative_flags(self.x);
+        page_crossed
     }
 
-    fn ldy(&mut self, bus: &mut Bus, mode: &AddressingMode) {
-        let addr = self.get_operand_address(bus, mode);
+    fn ldy(&mut self, bus: &mut Bus, mode: &AddressingMode) -> bool {
+        let (addr, page_crossed) = self.get_operand_address(bus, mode);
         let value = self.mem_read(bus, addr);
         self.y = value;
         self.update_zero_and_negative_flags(self.y);
+        page_crossed
     }
 
     fn sta(&mut self, bus: &mut Bus, mode: &AddressingMode) {
-        let addr = self.get_operand_address(bus, mode);
+        let (addr, _) = self.get_operand_address(bus, mode);
         self.mem_write(bus, addr, self.a);
     }
 
     fn stx(&mut self, bus: &mut Bus, mode: &AddressingMode) {
-        let addr = self.get_operand_address(bus, mode);
+        let (addr, _) = self.get_operand_address(bus, mode);
         self.mem_write(bus, addr, self.x);
     }
 
     fn sty(&mut self, bus: &mut Bus, mode: &AddressingMode) {
-        let addr = self.get_operand_address(bus, mode);
+        let (addr, _) = self.get_operand_address(bus, mode);
         self.mem_write(bus, addr, self.y);
     }
 
@@ -251,37 +266,42 @@ impl Cpu {
         self.update_zero_and_negative_flags(self.a);
     }
 
-    fn adc(&mut self, bus: &mut Bus, mode: &AddressingMode) {
-        let addr = self.get_operand_address(bus, mode);
+    fn adc(&mut self, bus: &mut Bus, mode: &AddressingMode) -> bool {
+        let (addr, page_crossed) = self.get_operand_address(bus, mode);
         let value = self.mem_read(bus, addr);
         self.add_to_register_a(value);
+        page_crossed
     }
 
-    fn sbc(&mut self, bus: &mut Bus, mode: &AddressingMode) {
-        let addr = self.get_operand_address(bus, mode);
+    fn sbc(&mut self, bus: &mut Bus, mode: &AddressingMode) -> bool {
+        let (addr, page_crossed) = self.get_operand_address(bus, mode);
         let value = self.mem_read(bus, addr);
         self.add_to_register_a(((value as i8).wrapping_neg().wrapping_sub(1)) as u8);
+        page_crossed
     }
 
-    fn and(&mut self, bus: &mut Bus, mode: &AddressingMode) {
-        let addr = self.get_operand_address(bus, mode);
+    fn and(&mut self, bus: &mut Bus, mode: &AddressingMode) -> bool {
+        let (addr, page_crossed) = self.get_operand_address(bus, mode);
         let value = self.mem_read(bus, addr);
         self.a &= value;
         self.update_zero_and_negative_flags(self.a);
+        page_crossed
     }
 
-    fn eor(&mut self, bus: &mut Bus, mode: &AddressingMode) {
-        let addr = self.get_operand_address(bus, mode);
+    fn eor(&mut self, bus: &mut Bus, mode: &AddressingMode) -> bool {
+        let (addr, page_crossed) = self.get_operand_address(bus, mode);
         let value = self.mem_read(bus, addr);
         self.a ^= value;
         self.update_zero_and_negative_flags(self.a);
+        page_crossed
     }
 
-    fn ora(&mut self, bus: &mut Bus, mode: &AddressingMode) {
-        let addr = self.get_operand_address(bus, mode);
+    fn ora(&mut self, bus: &mut Bus, mode: &AddressingMode) -> bool {
+        let (addr, page_crossed) = self.get_operand_address(bus, mode);
         let value = self.mem_read(bus, addr);
         self.a |= value;
         self.update_zero_and_negative_flags(self.a);
+        page_crossed
     }
 
     fn asl_a(&mut self) {
@@ -297,7 +317,7 @@ impl Cpu {
     }
 
     fn asl(&mut self, bus: &mut Bus, mode: &AddressingMode) {
-        let addr = self.get_operand_address(bus, mode);
+        let (addr, _) = self.get_operand_address(bus, mode);
         let mut data = self.mem_read(bus, addr);
         if data >> 7 == 1 {
             self.status.insert(CpuFlags::CARRY);
@@ -322,7 +342,7 @@ impl Cpu {
     }
 
     fn lsr(&mut self, bus: &mut Bus, mode: &AddressingMode) {
-        let addr = self.get_operand_address(bus, mode);
+        let (addr, _) = self.get_operand_address(bus, mode);
         let mut data = self.mem_read(bus, addr);
         if data & 1 == 1 {
             self.status.insert(CpuFlags::CARRY);
@@ -352,7 +372,7 @@ impl Cpu {
     }
 
     fn rol(&mut self, bus: &mut Bus, mode: &AddressingMode) {
-        let addr = self.get_operand_address(bus, mode);
+        let (addr, _) = self.get_operand_address(bus, mode);
         let mut data = self.mem_read(bus, addr);
         let old_carry = self.status.contains(CpuFlags::CARRY);
 
@@ -387,7 +407,7 @@ impl Cpu {
     }
 
     fn ror(&mut self, bus: &mut Bus, mode: &AddressingMode) {
-        let addr = self.get_operand_address(bus, mode);
+        let (addr, _) = self.get_operand_address(bus, mode);
         let mut data = self.mem_read(bus, addr);
         let old_carry = self.status.contains(CpuFlags::CARRY);
 
@@ -405,7 +425,7 @@ impl Cpu {
     }
 
     fn inc(&mut self, bus: &mut Bus, mode: &AddressingMode) {
-        let addr = self.get_operand_address(bus, mode);
+        let (addr, _) = self.get_operand_address(bus, mode);
         let mut data = self.mem_read(bus, addr);
         data = data.wrapping_add(1);
         self.mem_write(bus, addr, data);
@@ -413,7 +433,7 @@ impl Cpu {
     }
 
     fn dec(&mut self, bus: &mut Bus, mode: &AddressingMode) {
-        let addr = self.get_operand_address(bus, mode);
+        let (addr, _) = self.get_operand_address(bus, mode);
         let mut data = self.mem_read(bus, addr);
         data = data.wrapping_sub(1);
         self.mem_write(bus, addr, data);
@@ -440,8 +460,8 @@ impl Cpu {
         self.update_zero_and_negative_flags(self.y);
     }
 
-    fn cmp_base(&mut self, mode: &AddressingMode, compare_with: u8, bus: &mut Bus) {
-        let addr = self.get_operand_address(bus, mode);
+    fn cmp_base(&mut self, mode: &AddressingMode, compare_with: u8, bus: &mut Bus) -> bool {
+        let (addr, page_crossed) = self.get_operand_address(bus, mode);
         let data = self.mem_read(bus, addr);
         if data <= compare_with {
             self.status.insert(CpuFlags::CARRY);
@@ -450,22 +470,23 @@ impl Cpu {
         }
 
         self.update_zero_and_negative_flags(compare_with.wrapping_sub(data));
+        page_crossed
     }
 
-    fn cmp(&mut self, bus: &mut Bus, mode: &AddressingMode) {
-        self.cmp_base(mode, self.a, bus);
+    fn cmp(&mut self, bus: &mut Bus, mode: &AddressingMode) -> bool {
+        self.cmp_base(mode, self.a, bus)
     }
 
-    fn cpx(&mut self, bus: &mut Bus, mode: &AddressingMode) {
-        self.cmp_base(mode, self.x, bus);
+    fn cpx(&mut self, bus: &mut Bus, mode: &AddressingMode) -> bool {
+        self.cmp_base(mode, self.x, bus)
     }
 
-    fn cpy(&mut self, bus: &mut Bus, mode: &AddressingMode) {
-        self.cmp_base(mode, self.y, bus);
+    fn cpy(&mut self, bus: &mut Bus, mode: &AddressingMode) -> bool {
+        self.cmp_base(mode, self.y, bus)
     }
 
-    fn bit(&mut self, bus: &mut Bus, mode: &AddressingMode) {
-        let addr = self.get_operand_address(bus, mode);
+    fn bit(&mut self, bus: &mut Bus, mode: &AddressingMode) -> bool {
+        let (addr, page_crossed) = self.get_operand_address(bus, mode);
         let data = self.mem_read(bus, addr);
         let and = self.a & data;
         if and == 0 {
@@ -485,6 +506,7 @@ impl Cpu {
         } else {
             self.status.remove(CpuFlags::OVERFLOW);
         }
+        page_crossed
     }
 
     pub fn step(&mut self, bus: &mut Bus) -> u32 {
@@ -503,22 +525,22 @@ impl Cpu {
             0xA5 => { self.lda(bus, &AddressingMode::ZeroPage); self.pc += 1; 3 }
             0xB5 => { self.lda(bus, &AddressingMode::ZeroPageX); self.pc += 1; 4 }
             0xAD => { self.lda(bus, &AddressingMode::Absolute); self.pc += 2; 4 }
-            0xBD => { self.lda(bus, &AddressingMode::AbsoluteX); self.pc += 2; 4 } // +1 if page crossed
-            0xB9 => { self.lda(bus, &AddressingMode::AbsoluteY); self.pc += 2; 4 } // +1 if page crossed
+            0xBD => { let pc = self.lda(bus, &AddressingMode::AbsoluteX); self.pc += 2; 4 + if pc { 1 } else { 0 } }
+            0xB9 => { let pc = self.lda(bus, &AddressingMode::AbsoluteY); self.pc += 2; 4 + if pc { 1 } else { 0 } }
             0xA1 => { self.lda(bus, &AddressingMode::IndirectX); self.pc += 1; 6 }
-            0xB1 => { self.lda(bus, &AddressingMode::IndirectY); self.pc += 1; 5 } // +1 if page crossed
+            0xB1 => { let pc = self.lda(bus, &AddressingMode::IndirectY); self.pc += 1; 5 + if pc { 1 } else { 0 } }
             // LDX
             0xA2 => { self.ldx(bus, &AddressingMode::Immediate); self.pc += 1; 2 }
             0xA6 => { self.ldx(bus, &AddressingMode::ZeroPage); self.pc += 1; 3 }
             0xB6 => { self.ldx(bus, &AddressingMode::ZeroPageY); self.pc += 1; 4 }
             0xAE => { self.ldx(bus, &AddressingMode::Absolute); self.pc += 2; 4 }
-            0xBE => { self.ldx(bus, &AddressingMode::AbsoluteY); self.pc += 2; 4 } // +1 if page crossed
+            0xBE => { let pc = self.ldx(bus, &AddressingMode::AbsoluteY); self.pc += 2; 4 + if pc { 1 } else { 0 } }
             // LDY
             0xA0 => { self.ldy(bus, &AddressingMode::Immediate); self.pc += 1; 2 }
             0xA4 => { self.ldy(bus, &AddressingMode::ZeroPage); self.pc += 1; 3 }
             0xB4 => { self.ldy(bus, &AddressingMode::ZeroPageX); self.pc += 1; 4 }
             0xAC => { self.ldy(bus, &AddressingMode::Absolute); self.pc += 2; 4 }
-            0xBC => { self.ldy(bus, &AddressingMode::AbsoluteX); self.pc += 2; 4 } // +1 if page crossed
+            0xBC => { let pc = self.ldy(bus, &AddressingMode::AbsoluteX); self.pc += 2; 4 + if pc { 1 } else { 0 } }
             // STA
             0x85 => { self.sta(bus, &AddressingMode::ZeroPage); self.pc += 1; 3 }
             0x95 => { self.sta(bus, &AddressingMode::ZeroPageX); self.pc += 1; 4 }
@@ -541,46 +563,46 @@ impl Cpu {
             0x65 => { self.adc(bus, &AddressingMode::ZeroPage); self.pc += 1; 3 }
             0x75 => { self.adc(bus, &AddressingMode::ZeroPageX); self.pc += 1; 4 }
             0x6D => { self.adc(bus, &AddressingMode::Absolute); self.pc += 2; 4 }
-            0x7D => { self.adc(bus, &AddressingMode::AbsoluteX); self.pc += 2; 4 }
-            0x79 => { self.adc(bus, &AddressingMode::AbsoluteY); self.pc += 2; 4 }
+            0x7D => { let pc = self.adc(bus, &AddressingMode::AbsoluteX); self.pc += 2; 4 + if pc { 1 } else { 0 } }
+            0x79 => { let pc = self.adc(bus, &AddressingMode::AbsoluteY); self.pc += 2; 4 + if pc { 1 } else { 0 } }
             0x61 => { self.adc(bus, &AddressingMode::IndirectX); self.pc += 1; 6 }
-            0x71 => { self.adc(bus, &AddressingMode::IndirectY); self.pc += 1; 5 }
+            0x71 => { let pc = self.adc(bus, &AddressingMode::IndirectY); self.pc += 1; 5 + if pc { 1 } else { 0 } }
             // SBC
             0xE9 => { self.sbc(bus, &AddressingMode::Immediate); self.pc += 1; 2 }
             0xE5 => { self.sbc(bus, &AddressingMode::ZeroPage); self.pc += 1; 3 }
             0xF5 => { self.sbc(bus, &AddressingMode::ZeroPageX); self.pc += 1; 4 }
             0xED => { self.sbc(bus, &AddressingMode::Absolute); self.pc += 2; 4 }
-            0xFD => { self.sbc(bus, &AddressingMode::AbsoluteX); self.pc += 2; 4 }
-            0xF9 => { self.sbc(bus, &AddressingMode::AbsoluteY); self.pc += 2; 4 }
+            0xFD => { let pc = self.sbc(bus, &AddressingMode::AbsoluteX); self.pc += 2; 4 + if pc { 1 } else { 0 } }
+            0xF9 => { let pc = self.sbc(bus, &AddressingMode::AbsoluteY); self.pc += 2; 4 + if pc { 1 } else { 0 } }
             0xE1 => { self.sbc(bus, &AddressingMode::IndirectX); self.pc += 1; 6 }
-            0xF1 => { self.sbc(bus, &AddressingMode::IndirectY); self.pc += 1; 5 }
+            0xF1 => { let pc = self.sbc(bus, &AddressingMode::IndirectY); self.pc += 1; 5 + if pc { 1 } else { 0 } }
             // AND
             0x29 => { self.and(bus, &AddressingMode::Immediate); self.pc += 1; 2 }
             0x25 => { self.and(bus, &AddressingMode::ZeroPage); self.pc += 1; 3 }
             0x35 => { self.and(bus, &AddressingMode::ZeroPageX); self.pc += 1; 4 }
             0x2D => { self.and(bus, &AddressingMode::Absolute); self.pc += 2; 4 }
-            0x3D => { self.and(bus, &AddressingMode::AbsoluteX); self.pc += 2; 4 }
-            0x39 => { self.and(bus, &AddressingMode::AbsoluteY); self.pc += 2; 4 }
+            0x3D => { let pc = self.and(bus, &AddressingMode::AbsoluteX); self.pc += 2; 4 + if pc { 1 } else { 0 } }
+            0x39 => { let pc = self.and(bus, &AddressingMode::AbsoluteY); self.pc += 2; 4 + if pc { 1 } else { 0 } }
             0x21 => { self.and(bus, &AddressingMode::IndirectX); self.pc += 1; 6 }
-            0x31 => { self.and(bus, &AddressingMode::IndirectY); self.pc += 1; 5 }
+            0x31 => { let pc = self.and(bus, &AddressingMode::IndirectY); self.pc += 1; 5 + if pc { 1 } else { 0 } }
             // EOR
             0x49 => { self.eor(bus, &AddressingMode::Immediate); self.pc += 1; 2 }
             0x45 => { self.eor(bus, &AddressingMode::ZeroPage); self.pc += 1; 3 }
             0x55 => { self.eor(bus, &AddressingMode::ZeroPageX); self.pc += 1; 4 }
             0x4D => { self.eor(bus, &AddressingMode::Absolute); self.pc += 2; 4 }
-            0x5D => { self.eor(bus, &AddressingMode::AbsoluteX); self.pc += 2; 4 }
-            0x59 => { self.eor(bus, &AddressingMode::AbsoluteY); self.pc += 2; 4 }
+            0x5D => { let pc = self.eor(bus, &AddressingMode::AbsoluteX); self.pc += 2; 4 + if pc { 1 } else { 0 } }
+            0x59 => { let pc = self.eor(bus, &AddressingMode::AbsoluteY); self.pc += 2; 4 + if pc { 1 } else { 0 } }
             0x41 => { self.eor(bus, &AddressingMode::IndirectX); self.pc += 1; 6 }
-            0x51 => { self.eor(bus, &AddressingMode::IndirectY); self.pc += 1; 5 }
+            0x51 => { let pc = self.eor(bus, &AddressingMode::IndirectY); self.pc += 1; 5 + if pc { 1 } else { 0 } }
             // ORA
             0x09 => { self.ora(bus, &AddressingMode::Immediate); self.pc += 1; 2 }
             0x05 => { self.ora(bus, &AddressingMode::ZeroPage); self.pc += 1; 3 }
             0x15 => { self.ora(bus, &AddressingMode::ZeroPageX); self.pc += 1; 4 }
             0x0D => { self.ora(bus, &AddressingMode::Absolute); self.pc += 2; 4 }
-            0x1D => { self.ora(bus, &AddressingMode::AbsoluteX); self.pc += 2; 4 }
-            0x19 => { self.ora(bus, &AddressingMode::AbsoluteY); self.pc += 2; 4 }
+            0x1D => { let pc = self.ora(bus, &AddressingMode::AbsoluteX); self.pc += 2; 4 + if pc { 1 } else { 0 } }
+            0x19 => { let pc = self.ora(bus, &AddressingMode::AbsoluteY); self.pc += 2; 4 + if pc { 1 } else { 0 } }
             0x01 => { self.ora(bus, &AddressingMode::IndirectX); self.pc += 1; 6 }
-            0x11 => { self.ora(bus, &AddressingMode::IndirectY); self.pc += 1; 5 }
+            0x11 => { let pc = self.ora(bus, &AddressingMode::IndirectY); self.pc += 1; 5 + if pc { 1 } else { 0 } }
 
             // ASL
             0x0A => { self.asl_a(); 2 }
@@ -629,10 +651,10 @@ impl Cpu {
             0xC5 => { self.cmp(bus, &AddressingMode::ZeroPage); self.pc += 1; 3 }
             0xD5 => { self.cmp(bus, &AddressingMode::ZeroPageX); self.pc += 1; 4 }
             0xCD => { self.cmp(bus, &AddressingMode::Absolute); self.pc += 2; 4 }
-            0xDD => { self.cmp(bus, &AddressingMode::AbsoluteX); self.pc += 2; 4 }
-            0xD9 => { self.cmp(bus, &AddressingMode::AbsoluteY); self.pc += 2; 4 }
+            0xDD => { let pc = self.cmp(bus, &AddressingMode::AbsoluteX); self.pc += 2; 4 + if pc { 1 } else { 0 } }
+            0xD9 => { let pc = self.cmp(bus, &AddressingMode::AbsoluteY); self.pc += 2; 4 + if pc { 1 } else { 0 } }
             0xC1 => { self.cmp(bus, &AddressingMode::IndirectX); self.pc += 1; 6 }
-            0xD1 => { self.cmp(bus, &AddressingMode::IndirectY); self.pc += 1; 5 }
+            0xD1 => { let pc = self.cmp(bus, &AddressingMode::IndirectY); self.pc += 1; 5 + if pc { 1 } else { 0 } }
             
             0xE0 => { self.cpx(bus, &AddressingMode::Immediate); self.pc += 1; 2 }
             0xE4 => { self.cpx(bus, &AddressingMode::ZeroPage); self.pc += 1; 3 }
@@ -674,44 +696,36 @@ impl Cpu {
 
             // Branches
             0x90 => { // BCC
-                let condition = !self.status.contains(CpuFlags::CARRY);
-                self.branch(bus, condition);
-                2 // +1 if branch succeeded, +2 if page crossed (rough estimate)
+                let cycles = self.branch(bus, !self.status.contains(CpuFlags::CARRY));
+                2 + cycles
             }
             0xB0 => { // BCS
-                let condition = self.status.contains(CpuFlags::CARRY);
-                self.branch(bus, condition);
-                2
+                let cycles = self.branch(bus, self.status.contains(CpuFlags::CARRY));
+                2 + cycles
             }
             0xF0 => { // BEQ
-                let condition = self.status.contains(CpuFlags::ZERO);
-                self.branch(bus, condition);
-                2
+                let cycles = self.branch(bus, self.status.contains(CpuFlags::ZERO));
+                2 + cycles
             }
             0x30 => { // BMI
-                let condition = self.status.contains(CpuFlags::NEGATIVE);
-                self.branch(bus, condition);
-                2
+                let cycles = self.branch(bus, self.status.contains(CpuFlags::NEGATIVE));
+                2 + cycles
             }
             0xD0 => { // BNE
-                let condition = !self.status.contains(CpuFlags::ZERO);
-                self.branch(bus, condition);
-                2
+                let cycles = self.branch(bus, !self.status.contains(CpuFlags::ZERO));
+                2 + cycles
             }
             0x10 => { // BPL
-                let condition = !self.status.contains(CpuFlags::NEGATIVE);
-                self.branch(bus, condition);
-                2
+                let cycles = self.branch(bus, !self.status.contains(CpuFlags::NEGATIVE));
+                2 + cycles
             }
             0x50 => { // BVC
-                let condition = !self.status.contains(CpuFlags::OVERFLOW);
-                self.branch(bus, condition);
-                2
+                let cycles = self.branch(bus, !self.status.contains(CpuFlags::OVERFLOW));
+                2 + cycles
             }
             0x70 => { // BVS
-                let condition = self.status.contains(CpuFlags::OVERFLOW);
-                self.branch(bus, condition);
-                2
+                let cycles = self.branch(bus, self.status.contains(CpuFlags::OVERFLOW));
+                2 + cycles
             }
 
             // Status Flag Changes
@@ -766,6 +780,8 @@ impl Cpu {
                 2
             }
         };
-        cycles
+        let dma = bus.dma_cycles;
+        bus.dma_cycles = 0;
+        cycles + dma
     }
 }

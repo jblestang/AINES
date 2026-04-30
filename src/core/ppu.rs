@@ -239,7 +239,7 @@ impl Ppu {
 
             self.scanline += 1;
 
-            if self.scanline == 241 {
+            if self.scanline == 241 && self.cycles == 0 {
                 // Set VBlank at start of scanline 241
                 self.status |= 0x80;
                 if self.ctrl & 0x80 != 0 {
@@ -266,7 +266,7 @@ impl Ppu {
     fn render_scanline(&mut self, y: u16) {
         if y == 0 {
              // Basic frame info once per frame
-             let nt1_addr = self.mirror_vram_addr(0x2400) as usize;
+             // let nt1_addr = self.mirror_vram_addr(0x2400) as usize;
              let s0_y = self.oam_data[0];
              let s1_y = self.oam_data[4];
              if s0_y < 240 || s1_y < 240 {
