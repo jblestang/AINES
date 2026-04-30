@@ -1140,4 +1140,46 @@ mod tests {
         assert_eq!(cpu.pc, 0x02); // Just fetch BEQ + offset
         assert_eq!(cycles, 2);
     }
+
+    /// **Objective**: Verify that the NMI (Non-Maskable Interrupt) correctly pushes the 
+    /// PC and Status to the stack and jumps to the NMI vector.
+    #[test]
+    fn test_nmi() {
+        let mut test_bus = TestBus::new();
+        let mut cpu = Cpu::new();
+        cpu.pc = 0x1234;
+        cpu.status = CpuFlags::from_bits_truncate(0x24);
+        
+        // Set NMI vector in Cartridge ROM (0xFFFA -> 0x7FFA)
+        test_bus.bus.cartridge.prg_rom[0x7FFA] = 0xAD;
+        test_bus.bus.cartridge.prg_rom[0x7FFB] = 0xDE;
+        
+        cpu.nmi(&mut test_bus.bus);
+        
+        assert_eq!(cpu.pc, 0xDEAD);
+        assert_eq!(cpu.sp, 0xFA); // Pushed 2 bytes of PC + 1 byte of Status (0xFD - 3 = 0xFA)
+    }
+
+    /// **Objective**: Verify that OAM DMA correctly transfers 256 bytes from CPU RAM 
+    /// to PPU OAM and stalls the CPU for the correct number of cycles.
+    #[test]
+    fn test_dma() {
+        let mut test_bus = TestBus::new();
+        
+        // Fill RAM at 0x0200 with test data
+        for i in 0..256 {
+            test_bus.bus.write(0x0200 + i as u16, i as u8);
+        }
+        
+        // Trigger DMA by writing 0x02 to $4014
+        test_bus.bus.write(0x4014, 0x02);
+        
+        // Check PPU OAM data
+        for i in 0..256 {
+            assert_eq!(test_bus.bus.ppu.oam_data[i], i as u8);
+        }
+        
+        // Check CPU stall cycles
+        assert_eq!(test_bus.bus.dma_cycles, 513);
+    }
 }
