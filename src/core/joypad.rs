@@ -66,3 +66,39 @@ impl Joypad {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// **Objective**: Verify that the Joypad correctly latches button states when 
+    /// strobe is active and rotates through buttons during subsequent reads.
+    #[test]
+    fn test_joypad_polling() {
+        let mut joypad = Joypad::new();
+        joypad.set_button_pressed_status(JoypadButton::BUTTON_A, true);
+        joypad.set_button_pressed_status(JoypadButton::SELECT, true);
+        
+        // Strobe ON then OFF to reset position
+        joypad.write(1);
+        joypad.write(0);
+        
+        assert_eq!(joypad.read(), 1); // A
+        assert_eq!(joypad.read(), 0); // B
+        assert_eq!(joypad.read(), 1); // Select
+        assert_eq!(joypad.read(), 0); // Start
+    }
+
+    /// **Objective**: Verify that the Joypad continues to return 'A' status while 
+    /// strobe is held active (standard NES hardware behavior).
+    #[test]
+    fn test_joypad_strobe_latch() {
+        let mut joypad = Joypad::new();
+        joypad.set_button_pressed_status(JoypadButton::BUTTON_A, true);
+        
+        joypad.write(1);
+        assert_eq!(joypad.read(), 1);
+        assert_eq!(joypad.read(), 1);
+        assert_eq!(joypad.read(), 1);
+    }
+}

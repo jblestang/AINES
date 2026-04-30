@@ -1182,4 +1182,45 @@ mod tests {
         // Check CPU stall cycles
         assert_eq!(test_bus.bus.dma_cycles, 513);
     }
+
+    /// **Objective**: Verify that the CPU Reset correctly reloads the Program Counter 
+    /// from the Reset Vector ($FFFC) and resets internal registers.
+    #[test]
+    fn test_reset() {
+        let mut test_bus = TestBus::new();
+        let mut cpu = Cpu::new();
+        cpu.a = 0xFF;
+        
+        // Set Reset vector (0xFFFC -> 0x7FFC)
+        test_bus.bus.cartridge.prg_rom[0x7FFC] = 0xEF;
+        test_bus.bus.cartridge.prg_rom[0x7FFD] = 0xBE;
+        
+        cpu.reset(&mut test_bus.bus);
+        
+        assert_eq!(cpu.pc, 0xBEEF);
+        assert_eq!(cpu.a, 0); // Reset clears accumulator
+    }
+
+    /// **Objective**: Verify that PHA (Push Accumulator) and PLA (Pull Accumulator) 
+    /// correctly use the stack memory and update the stack pointer.
+    #[test]
+    fn test_stack_ops() {
+        let mut test_bus = TestBus::new();
+        let mut cpu = Cpu::new();
+        cpu.a = 0x42;
+        cpu.pc = 0;
+        
+        // PHA (0x48), PLA (0x68)
+        test_bus.bus.ram[0] = 0x48;
+        test_bus.bus.ram[1] = 0x68;
+        
+        cpu.step(&mut test_bus.bus); // PHA
+        assert_eq!(cpu.sp, 0xFC);
+        assert_eq!(test_bus.bus.ram[0x01FD], 0x42);
+        
+        cpu.a = 0x00;
+        cpu.step(&mut test_bus.bus); // PLA
+        assert_eq!(cpu.a, 0x42);
+        assert_eq!(cpu.sp, 0xFD);
+    }
 }

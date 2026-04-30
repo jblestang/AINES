@@ -132,3 +132,25 @@ impl Bus {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use super::super::cartridge::Cartridge;
+
+    /// **Objective**: Verify that 16KB PRG-ROM is correctly mirrored into both 
+    /// $8000 and $C000 regions (standard Mapper 0 / NROM behavior).
+    #[test]
+    fn test_bus_prg_mirroring_16k() {
+        let cartridge = Cartridge {
+            prg_rom: vec![0xAA; 16384],
+            chr_rom: vec![0; 8192],
+            mapper: 0,
+            vertical_mirroring: true,
+        };
+        let mut bus = Bus::new(cartridge);
+        
+        assert_eq!(bus.read(0x8000), 0xAA);
+        assert_eq!(bus.read(0xC000), 0xAA);
+    }
+}
